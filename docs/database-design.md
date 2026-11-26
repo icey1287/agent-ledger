@@ -1,0 +1,328 @@
+# Agent Desk 数据库设计与实现（2 号交付）
+
+## 0. 交付清单
+
+| 交付项 | 文件 | 内容 |
+| --- | --- | --- |
+| ER 图 | 本文第 2 节 | 11 张实体的关系、基数与外键 |
+| 表结构 | `db/schema.sql`、本文第 3 节 | PostgreSQL 17 DDL、字段、约束、索引 |
+| 样例数据 | `db/sample-data.sql` | 2 用户 / 3 模型 / 4 轮次 / 6 次调用，覆盖完成、超预算、待核实、已停止 |
+| 业务 SQL | `db/business-queries.sql` | 对话列表、轮次详情、费用汇总、待核实队列等 12 条 |
+| 事务与扣费逻辑 | `db/transactions.sql`、本文第 6 节 | 6 个关键事务、扣费公式、软预算、幂等补录、启动恢复 |
+
+后端已有实现与本文的对应关系见第 7 节。本文是数据库设计的统一说明，不替代 spec 的行为定义。
+
+## 1. 设计依据与范围
+
+依据 `ARCHITECTURE.md` 与 `spec/*.md`：
+
+- 对话是上下文与资料隔离边界；一轮消息对应一个 `tasks` 行，固定模型价格版本、预算与工具授权。
+- 费用按模型实际返回的 token 和**创建轮次时锁定**的价格版本计算，历史账目不随现价变化。
+- 用量未知时费用为 `NULL`，禁止记 0 或估算值。
+- 不实现订阅、充值、积分、周期额度和支付结算；计费是**用量账目**，不是资金账户。
+
+因此本设计没有 `wallets` / `balances` / `payments` 表。用户要求的“扣费逻辑”对应的是**调用成功后原子写入一次费用记录**，以及按轮累计判断软预算，而不是从余额扣减。
+
+## 2. ER 图
+
+```mermaid
+erDiagram
+    USERS ||--o{ SESSIONS : "建立会话"
+    USERS ||--o{ CONVERSATIONS : "拥有"
+    USERS ||--o{ TASKS : "发起"
+    USERS |o--o{ MODEL_CALLS : "补录核实"
+    CONVERSATIONS ||--o{ TASKS : "包含轮次"
+    MODELS ||--o{ MODEL_PRICES : "价格版本"
+    MODEL_PRICES ||--o{ TASKS : "固定费率"
+    TASKS ||--o{ MATERIALS : "上传资料"
+    TASKS ||--o{ TASK_TOOL_GRANTS : "工具授权"
+    TASKS ||--o{ AGENT_RUNS : "执行"
+    AGENT_RUNS |o--o{ AGENT_RUNS : "委派子角色"
+    AGENT_RUNS ||--o{ MODEL_CALLS : "模型调用"
+    AGENT_RUNS ||--o{ TOOL_CALLS : "工具调用"
+    TASK_TOOL_GRANTS |o--o{ TOOL_CALLS : "授权依据"
+
+    USERS {
+        string id PK
+        string username UK
+        string password_hash
+        string role
+    }
+    SESSIONS {
+        string id PK
+        string user_id FK
+        string token_hash UK
+        string csrf_token
+        timestamp expires_at
+    }
+    MODELS {
+        string id PK
+        string name UK
+        string display_name
+        boolean enabled
+    }
+    MODEL_PRICES {
+        string id PK
+        string model_id FK
+        int version
+        string currency
+        decimal input_rate
+        decimal output_rate
+        decimal cached_rate
+    }
+    CONVERSATIONS {
+        string id PK
+        string user_id FK
+        string title
+        timestamp updated_at
+    }
+    TASKS {
+        string id PK
+        string conversation_id FK
+        string user_id FK
+        string price_id FK
+        text instruction
+        decimal budget
+        string status
+        text result
+    }
+    MATERIALS {
+        string id PK
+        string task_id FK
+        string name
+        string kind
+        text content
+    }
+    TASK_TOOL_GRANTS {
+        string id PK
+        string task_id FK
+        string tool
+        timestamp expires_at
+        timestamp revoked_at
+    }
+    AGENT_RUNS {
+        string id PK
+        string task_id FK
+        string parent_id FK
+        string role
+        string status
+        text output
+    }
+    MODEL_CALLS {
+        string id PK
+        string run_id FK
+        string status
+        string usage_status
+        int input_tokens
+        int output_tokens
+        int cached_tokens
+        decimal cost
+        json raw_usage
+        string reconciled_by FK
+    }
+    TOOL_CALLS {
+        string id PK
+        string run_id FK
+        string grant_id FK
+        string tool
+        json arguments
+        string status
+    }
+```
+
+关系要点：
+
+- `model_calls → agent_runs → tasks → model_prices`：一次调用通过执行链固定到历史价格版本，改价不影响旧账。
+- `tasks.conversation_id` 容许为空，用于兼容迁移前创建的旧轮次；新轮次必须属于对话。
+- `agent_runs.parent_id` 自关联只允许协调者委派摘要 / 审核角色，不能递归创建角色。
+- `tool_calls.grant_id` 可为空：角色委派类工具不需要资料授权；资料工具必须记录本次授权判断所依据的行。
+
+## 3. 表结构
+
+### 3.1 总览
+
+| 表 | 用途 | 关键唯一 / 检查约束 |
+| --- | --- | --- |
+| `users` | 账号与角色 | `username` 唯一；`role IN ('user','admin')` |
+| `sessions` | 服务端会话与 CSRF | `token_hash` 唯一；`expires_at` |
+| `models` | 模型目录 | `name` 唯一；`enabled` |
+| `model_prices` | 不可变价格版本 | `(model_id, version)` 唯一；费率非负 |
+| `conversations` | 对话 | `user_id` 索引；`updated_at` 索引 |
+| `tasks` | 一轮消息 / 执行 | `budget > 0`；9 种状态枚举 |
+| `materials` | TXT / PDF / 粘贴文本 | `kind IN ('text','txt','pdf')` |
+| `task_tool_grants` | 每轮每工具授权 | `(task_id, tool)` 唯一；工具白名单 |
+| `agent_runs` | 协调 / 摘要 / 审核执行 | 角色与状态枚举；`parent_id` 自关联 |
+| `model_calls` | 调用与用量账目 | `cost >= 0` 或 `NULL`；`cached_tokens <= input_tokens` |
+| `tool_calls` | 资料工具 / 委派审计 | 状态枚举；`grant_id` 可空 |
+
+主键统一 `VARCHAR(36)`（UUID 字符串），时间统一 `TIMESTAMPTZ`（UTC），金额统一 `NUMERIC(24,12)`。完整 DDL 见 `db/schema.sql`。
+
+### 3.2 字段明细
+
+**users**：`id` PK、`created_at`、`username` UK、`password_hash`（Argon2id PHC）、`role`（user/admin）。
+
+**sessions**：`id` PK、`created_at`、`user_id` FK→users、`token_hash` UK（令牌 SHA-256，不明文）、`csrf_token`、`expires_at`。
+
+**models**：`id` PK、`created_at`、`name` UK（供应商标识，创建后不可改）、`display_name`、`enabled`。
+
+**model_prices**：`id` PK、`created_at`、`model_id` FK→models、`version`、`currency`（3 位字母）、`input_rate`、`output_rate`、`cached_rate`（可空）、`source_url`、`billing_note`；费率单位 USD/百万 token。
+
+**conversations**：`id` PK、`created_at`、`user_id` FK→users、`title`（首条消息生成）、`updated_at`。
+
+**tasks**：`id` PK、`created_at`、`conversation_id` FK→conversations（可空）、`user_id` FK→users、`price_id` FK→model_prices（本轮锁定）、`title`、`instruction`（用户消息）、`budget`、`status`、`result`（最终回复）、`reason`、`finished_at`。
+
+**materials**：`id` PK、`created_at`、`task_id` FK→tasks、`name`、`kind`（text/txt/pdf）、`content`（提取全文）。
+
+**task_tool_grants**：`id` PK、`created_at`、`task_id` FK→tasks、`tool`（read_material/search_materials）、`expires_at`、`revoked_at`。
+
+**agent_runs**：`id` PK、`created_at`、`task_id` FK→tasks、`parent_id` FK→agent_runs（可空）、`role`（coordinator/summary/review）、`status`、`instruction`、`output`、`finished_at`。
+
+**model_calls**：`id` PK、`created_at`、`run_id` FK→agent_runs、`provider_request_id`、`status`、`usage_status`（unknown/known）、`input_tokens`、`output_tokens`、`cached_tokens`、`cost`（NULL=未知）、`raw_usage` JSON、`response_text`、`error`、`reconciled_by` FK→users、`evidence`、`reconciled_at`、`finished_at`。
+
+**tool_calls**：`id` PK、`created_at`、`run_id` FK→agent_runs、`grant_id` FK→task_tool_grants（可空）、`tool`、`arguments` JSON、`status`（completed/denied/failed）、`output`。
+
+### 3.3 索引设计
+
+| 索引 | 支撑的查询 |
+| --- | --- |
+| `ix_conversations_user_id`、`ix_conversations_updated_at` | 用户对话列表按最近更新排序 |
+| `ix_tasks_conversation_id`、`ix_tasks_conv_created(conversation_id, created_at, id)` | 对话时间线、同对话历史上下文 |
+| `ix_tasks_user_id`、`ix_tasks_status` | 用户任务列表、执行器扫描、互斥检查 |
+| `ix_model_prices_model_id` | 查询最新价格版本 |
+| `ix_materials_task_id`、`ix_task_tool_grants_task_id` | 资料目录与授权检查 |
+| `ix_agent_runs_task_id`、`ix_agent_runs_parent_id` | 单轮执行详情、委派链 |
+| `ix_model_calls_run_id`、`ix_model_calls_status` | 费用汇总、待核实队列、启动恢复 |
+| `ix_tool_calls_run_id` | 工具审计展示 |
+
+### 3.4 关键约束与设计取舍
+
+- **价格不可变**：没有 `UPDATE model_prices` 的业务路径；改价插入新 `version`，唯一约束防止并发生成重复版本。
+- **费用可空**：`cost IS NULL` 表示用量未知，CHECK 只约束非空费用非负；这样数据库层面就阻止“未知费用被记成 0”。
+- **缓存 token 是输入子集**：`cached_tokens <= input_tokens` 由 CHECK 保证，计费公式不再重复相加。
+- **金额用 NUMERIC 不用 float**：`Decimal(24,12)` 对应前端十进制字符串，避免累计误差。
+- **不做资金余额表**：业务只记录费用账目；“扣费”是幂等的调用结算，不是账户扣款。
+
+## 4. 样例数据
+
+`db/sample-data.sql` 使用固定 ID，覆盖以下场景：
+
+| 样例 | 说明 |
+| --- | --- |
+| `t-alice-1` / `call-01~03` | 完整完成的一轮：协调 + 摘要 + 审核，费用 0.00228 USD |
+| `t-alice-2` / `call-04` | 软预算 0.0005，最后一次调用记 0.0014，任务 `stopped_budget` |
+| `t-alice-3` / `call-05` | 网络中断，`cost = NULL`，任务 `awaiting_usage`，授权已过期 |
+| `t-bob-1` / `call-06` | 用户停止 + 供应商明确拒绝，记已知零用量失败调用 |
+| `p-minimax-v1/v2` | 同一模型两个价格版本，旧轮次仍引用 v1 |
+| `tc-05/06/07` | 分别演示授权撤销、授权过期、未获授权的工具拒绝 |
+
+样例密码哈希是占位字符串，仅用于展示字段形态，不能用于登录。
+
+## 5. 业务 SQL
+
+`db/business-queries.sql` 提供以下查询，参数用 `$1`、`$2` 占位，由应用绑定：
+
+| 编号 | 查询 | 用途 |
+| --- | --- | --- |
+| Q1 | 用户对话列表 | 首页侧栏，按 `updated_at` 倒序 |
+| Q2 | 对话时间线 | 一轮一条，含状态、费用小计 |
+| Q3 | 单轮执行详情 | runs + 委派链 |
+| Q4 | 单轮调用账目 | 逐次 token、费用、错误、补录依据 |
+| Q5 | 单轮费用汇总 | 已知小计 + 未知调用数 |
+| Q6 | 发送前互斥检查 | 活跃轮次 + 在途调用 |
+| Q7 | 授权有效性检查 | 判断 `revoked_at` / `expires_at` |
+| Q8 | 待核实队列 | 管理员补录入口 |
+| Q9 | 价格版本历史 | 管理端展示改价轨迹 |
+| Q10 | 用户累计费用 | 按模型与币种汇总 |
+| Q11 | 对话内资料目录 | 模型可见的附件清单 |
+| Q12 | 工具调用审计 | 区分成功、拒绝、失败 |
+
+所有查询都带用户归属过滤（`user_id = $1`），管理员通过普通任务接口访问时也受同样约束。
+
+## 6. 事务与扣费逻辑
+
+### 6.1 加锁顺序总表
+
+统一顺序：**对话行 / 任务行 → 授权行 / 调用行**。禁止反向加锁，避免死锁。
+
+| 场景 | 加锁顺序 | 目的 |
+| --- | --- | --- |
+| 创建新一轮 | `conversation` FOR UPDATE | 同对话互斥，校验上一轮已结算 |
+| 领取执行权 | `task` FOR UPDATE | 只有 `pending` 能转 `running`，只领取一次 |
+| 调用前检查 | `task` FOR UPDATE | 预算与未知用量判定有稳定时点 |
+| 响应结算 | `task` → `model_call` | 用量、费用、状态一次写入 |
+| 工具执行 / 授权修改 | `task` → `task_tool_grant` | 每次读取有明确的授权判断时点 |
+| 管理员补录 | `task` → `model_call` | 幂等，且不覆盖已确认账目 |
+
+**关键原则**：任何数据库锁都不跨外部 HTTP 模型请求。发出请求前短事务提交 `in_flight` 记录，响应回来后另开事务结算。
+
+### 6.2 六个关键事务
+
+完整可执行 SQL 见 `db/transactions.sql`，这里给出要点：
+
+1. **创建一轮**：锁对话 → 检查 `status IN ('pending','running')` 的轮次与 `in_flight` 调用 → 取模型最新价格版本 → 插入 `tasks` / `materials` / `task_tool_grants` → 更新对话标题与 `updated_at` → 提交后才启动后台执行。
+2. **领取执行权**：`SELECT ... FOR UPDATE` 任务，`status = 'pending'` 才置 `running`；重复领取直接返回。
+3. **调用前登记**：短事务锁任务并检查“是否存在 `usage_status='unknown'` 的调用”和“已知费用是否已达预算”，通过后插入 `model_calls(status='in_flight', usage_status='unknown')`，提交，然后调用供应商。
+4. **响应结算**：同事务写入 `raw_usage` / token / `cost` / `status` / `usage_status`；只有一行调用记录，不另生成账单。用量非法或缺失时 `cost` 保持 `NULL`、状态置 `usage_unknown`，任务转 `awaiting_usage`。
+5. **工具执行**：锁任务 → 锁授权行 → 判断撤销与到期 → 读取当前对话资料 → 写 `tool_calls`。任一项不满足即记录 `denied` 并停止本轮。
+6. **管理员补录**：锁任务 → 锁调用行；`usage_status='known'` 直接返回原费用（`already_reconciled=true`）；`status <> 'usage_unknown'` 拒绝；否则用**原价格版本**计算并写入 token、费用、操作者、依据、时间。若该轮全部未知项已确认，把 `awaiting_usage` 改为 `interrupted`，不自动续跑。
+
+### 6.3 扣费公式与精度
+
+```
+费用 = ((输入 token − 缓存 token) × 输入单价
+        + 缓存 token × 缓存单价
+        + 输出 token × 输出单价) / 1,000,000
+```
+
+- 缓存 token 是输入子集，不重复计费；推理 token 已含在供应商输出计数中时不另加。
+- 计算使用 `Decimal`，存储 `NUMERIC(24,12)`，传输用十进制字符串。
+- 以下情况**不得按 0 结算**：usage 缺失、计数非法、缓存计数 > 输入计数、有缓存 token 但价格版本 `cached_rate IS NULL`。这些情况 `cost = NULL`，任务进入 `awaiting_usage`。
+- 供应商明确拒绝（4xx）可确定未产生用量，记已知 `0` 费用的失败调用；超时、5xx、响应格式异常一律待核实，不自动重试。
+
+### 6.4 软预算
+
+预算是**停止阈值**，不是预付额度：
+
+- 每次调用前检查本轮已知费用合计 `SUM(cost) >= budget` 则不再发起新调用。
+- 最后一次调用允许超额。若该调用已形成完整最终回复，任务可 `completed`；否则置 `stopped_budget`。
+- 存在任何 `usage_status='unknown'` 的调用时优先停止，状态为 `awaiting_usage`。
+
+### 6.5 幂等与并发
+
+- 一次模型调用只有一条 `model_calls` 记录；请求前创建、响应后更新，不插入第二条“账单行”。
+- 补录以 `usage_status='known'` 为幂等标记，重复提交返回原费用，不改已确认账目。
+- 价格版本 `(model_id, version)` 唯一，并发改价只有一个成功。
+- 授权 `(task_id, tool)` 唯一，并发撤销 / 开启作用于同一行。
+- 同对话通过行锁串行；不同对话可并发。
+
+### 6.6 启动恢复
+
+服务重启时单事务处理：
+
+- `model_calls.status = 'in_flight'` → `usage_unknown`，关联任务 → `awaiting_usage`（用量可能已产生）。
+- 其余 `tasks.status IN ('pending','running')` → `interrupted`，`agent_runs.status='running'` → `interrupted`。
+- 恢复逻辑不重发模型请求，不清除已确认费用。
+
+## 7. 与后端代码的对应
+
+| 设计项 | 现有代码位置 | 状态 |
+| --- | --- | --- |
+| 实体与 ORM 映射 | `backend/app/entities.py` | 已实现 11 张表；本文 DDL 额外补枚举 CHECK 与复合索引 |
+| 建表与兼容迁移 | `backend/app/main.py`、`backend/app/schema.py` | `create_all` + `upgrade_conversations` 增加 `conversation_id` |
+| 费用计算 | `backend/app/billing.py` | `calculate()` 已实现 Decimal 公式与 `UnknownUsage` |
+| 执行与事务 | `backend/app/execution.py` | 6 个事务的加锁顺序已实现 |
+| 创建轮次 / 授权 / 查询 | `backend/app/workspaces.py` | 对话互斥、授权变更、详情查询 |
+| 补录 | `backend/app/admin.py` | 幂等补录与待核实队列 |
+| 模型与价格版本 | `backend/app/catalog.py` | 改价生成新版本 |
+
+若以 `db/schema.sql` 初始化数据库（而非 `create_all`），枚举 CHECK 会生效；应用侧写入的枚举值均在约束范围内，不影响现有代码。
+
+## 8. 验收对照
+
+| spec 条款 | 数据库层面的支撑 |
+| --- | --- |
+| ACC-01/03/04/05 | `users` 唯一约束、`role` CHECK、全表 `user_id` 过滤、`token_hash` 不明文 |
+| MODEL-01/02/03/04 | `models.name` 唯一 / `enabled`、`model_prices` 版本唯一与非负 CHECK |
+| MAT-02/04/05 | `materials` 归属 + `task_tool_grants` 有效期 / 撤销字段、`tool_calls` 审计 |
+| EXEC-03/04/08 | `tasks.status` 与 `agent_runs.status` 枚举、`model_calls.status` 枚举 |
+| BILL-01/02/03/06/07 | `model_calls` 全字段、`cost` 可空、补录审计字段、`usage_status` 幂等标记 |
