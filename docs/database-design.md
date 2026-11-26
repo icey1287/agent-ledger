@@ -9,8 +9,10 @@
 | 样例数据 | `db/sample-data.sql` | 2 用户 / 3 模型 / 4 轮次 / 6 次调用，覆盖完成、超预算、待核实、已停止 |
 | 业务 SQL | `db/business-queries.sql` | 对话列表、轮次详情、费用汇总、待核实队列等 12 条 |
 | 事务与扣费逻辑 | `db/transactions.sql`、本文第 6 节 | 6 个关键事务、扣费公式、软预算、幂等补录、启动恢复 |
+| 数据库补齐迁移 | `db/migration.sql`、本文第 9 节 | 对 `create_all` 建立的库补齐枚举 CHECK 与复合索引 |
+| 验收自查 SQL | `db/verification.sql`、本文第 10 节 | V1–V9 一致性断言 + V10 软预算观察 |
 
-后端已有实现与本文的对应关系见第 7 节。本文是数据库设计的统一说明，不替代 spec 的行为定义。
+后端接口协同与本文的对应关系见第 7 节。本文是数据库设计的统一说明，不替代 spec 的行为定义。
 
 ## 1. 设计依据与范围
 
@@ -303,7 +305,9 @@ erDiagram
 - 其余 `tasks.status IN ('pending','running')` → `interrupted`，`agent_runs.status='running'` → `interrupted`。
 - 恢复逻辑不重发模型请求，不清除已确认费用。
 
-## 7. 与后端代码的对应
+## 7. 后端接口协同（2 号与 3 号）
+
+### 7.1 模块与代码的对应
 
 | 设计项 | 现有代码位置 | 状态 |
 | --- | --- | --- |
@@ -315,7 +319,50 @@ erDiagram
 | 补录 | `backend/app/admin.py` | 幂等补录与待核实队列 |
 | 模型与价格版本 | `backend/app/catalog.py` | 改价生成新版本 |
 
-若以 `db/schema.sql` 初始化数据库（而非 `create_all`），枚举 CHECK 会生效；应用侧写入的枚举值均在约束范围内，不影响现有代码。
+### 7.2 接口到数据表与事务的映射
+
+下表是“后端接口由 2 号和 3 号协同完成”的逐项核查依据。前端只经这些接口访问数据库，不直接读写表；每行给出接口涉及的读写表、对应的事务或业务 SQL、以及数据库层必须守住的一致性要点。
+
+**账号与会话**（`auth.py`）
+
+| 接口 | 读写表 | 对应事务 / SQL | 一致性要点 |
+| --- | --- | --- | --- |
+| `POST /api/auth/register` | `users` INSERT；`sessions` INSERT | 单事务 | `username` 唯一；客户端角色不生效，`role` 只能为 `user` |
+| `POST /api/auth/login` | `users` SELECT；`sessions` INSERT | 单事务 | 凭据错误不建立会话 |
+| `GET /api/auth/me` | `sessions` + `users` SELECT | 只读 | 仅 `expires_at > now()` 的会话有效 |
+| `POST /api/auth/logout` | `sessions` DELETE | 单事务 | 只删除当前会话 |
+
+**模型与价格**（`catalog.py`）
+
+| 接口 | 读写表 | 对应事务 / SQL | 一致性要点 |
+| --- | --- | --- | --- |
+| `GET /api/models` | `models` + `model_prices` SELECT | Q9 取最新价 | 只返回 `enabled = true` 的模型 |
+| `GET /api/admin/models` | 同上（含停用） | Q9 | 管理员权限 |
+| `POST /api/admin/models` | `models` + `model_prices`（v1）INSERT | 辅助 B | `(model_id, version)` 唯一；首个版本为 1 |
+| `PUT /api/admin/models/{id}` | `models` UPDATE；新 `model_prices` INSERT | 辅助 B | 供应商标识不可改；改价追加版本，不覆盖历史 |
+
+**对话与轮次**（`workspaces.py`）
+
+| 接口 | 读写表 | 对应事务 / SQL | 一致性要点 |
+| --- | --- | --- | --- |
+| `GET /api/conversations` | `conversations` SELECT | Q1 | `user_id` 过滤，按 `updated_at` 倒序 |
+| `POST /api/conversations` | `conversations` INSERT | 单事务 | `title` 初值为“新对话” |
+| `GET /api/conversations/{id}` | `conversations` + `tasks` + 明细 | Q2、Q3、Q4、Q11、Q12 | `user_id` 过滤，逐轮返回执行与费用 |
+| `POST /api/conversations/{id}/messages` | `tasks`、`materials`、`task_tool_grants` INSERT | T1 | 锁对话；活跃轮次或在途调用存在时拒绝 |
+| `GET /api/tasks` | `tasks` + `model_calls` | Q5 | 兼容入口；仍按 `user_id` 过滤 |
+| `POST /api/tasks` | 同消息接口 | T1 | 兼容入口；聊天页使用对话消息接口 |
+| `GET /api/tasks/{id}` | `tasks`、`agent_runs`、`model_calls`、`tool_calls`、`materials`、授权 | Q3、Q4、Q11、Q12 | 单轮详情；角色中间输出与最终回复分开 |
+| `POST /api/tasks/{id}/cancel` | `tasks` UPDATE | 辅助 A | 在途调用不置为失败，响应回来仍结算 |
+| `PUT /api/tasks/{id}/grants/{tool}` | `task_tool_grants` UPSERT | T5 授权段 | 锁任务 → 授权行；到期时间须为未来 |
+
+**管理与补录**（`admin.py`）
+
+| 接口 | 读写表 | 对应事务 / SQL | 一致性要点 |
+| --- | --- | --- | --- |
+| `GET /api/admin/unresolved` | `model_calls` + `tasks` + `users` + `model_prices` | Q8 | 仅管理员；返回补录所需原价格费率 |
+| `POST /api/admin/calls/{id}/reconcile` | `model_calls` + `tasks` UPDATE | T6 | 锁任务 → 调用行；已确认调用幂等返回，不重复计费 |
+
+**协同边界**：接口层负责身份、权限与参数校验，事务脚本负责加锁顺序与状态流转，数据库约束负责最终兜底（枚举、唯一、非空、非负）。三者不重复计算费用：金额只在 `billing.calculate()` 中按固定价格版本计算一次，接口只读取 `model_calls.cost`。若以 `db/schema.sql` 初始化数据库（而非 `create_all`），枚举 CHECK 会生效；已有库按第 9 节迁移补齐。
 
 ## 8. 验收对照
 
@@ -326,3 +373,44 @@ erDiagram
 | MAT-02/04/05 | `materials` 归属 + `task_tool_grants` 有效期 / 撤销字段、`tool_calls` 审计 |
 | EXEC-03/04/08 | `tasks.status` 与 `agent_runs.status` 枚举、`model_calls.status` 枚举 |
 | BILL-01/02/03/06/07 | `model_calls` 全字段、`cost` 可空、补录审计字段、`usage_status` 幂等标记 |
+
+## 9. 数据库初始化与迁移
+
+### 9.1 初始化路径
+
+| 场景 | 方式 | 结果 |
+| --- | --- | --- |
+| 全新数据库 | 执行 `db/schema.sql` | 11 张表 + 全部枚举 CHECK + 复合索引一次到位 |
+| 现有 `create_all` 库 | 执行 `db/migration.sql` | 保留全部数据，仅补齐 CHECK 与索引 |
+| 旧版无 `conversations` 的库 | `main.py` 启动时调用 `upgrade_conversations` | 增加 `tasks.conversation_id` 并接入旧任务 |
+
+`db/schema.sql` 与 `backend/app/entities.py` 字段一一对应，主键、金额精度与 UTC 时间口径一致；差别只在 DDL 额外声明了枚举与业务 CHECK。应用侧写入的枚举值均在约束范围内，因此迁移不改变现有代码行为。
+
+### 9.2 迁移顺序
+
+1. 备份数据库。
+2. 执行 `db/verification.sql` 的 V1–V9，确认无异常行；存在脏数据时先清洗。
+3. 执行 `db/migration.sql`。DO 块按约束名判重，重复执行不会报错。
+4. 再跑一次 V1–V9 与 `db/sample-data.sql`，确认约束生效且历史数据仍可查询。
+5. 迁移不修改 `model_prices` 任何已有行；改价仍只追加新版本。
+
+Compose 启动与依赖安装见 `DEVELOPMENT.md`，本文不重复运行步骤。
+
+## 10. 验收自查
+
+`db/verification.sql` 把第 8 节的 spec 条款落到可执行的数据库断言。V1–V9 均应返回 0 行；V10 返回的行表示软预算允许的最后一次超额，不是错误。
+
+| 编号 | 检查内容 | 预期 |
+| --- | --- | --- |
+| V1 | 未知用量调用不得写入费用 | 0 行，`cost` 保持 `NULL` |
+| V2 | 已知用量调用的 token 与费用完整 | 0 行 |
+| V3 | 缓存 token 是输入 token 的子集 | 0 行 |
+| V4a / V4b | `awaiting_usage` 有未确认调用；`completed` 无未确认调用 | 0 行 |
+| V5a / V5b | 任务引用存在的价格版本；价格版本归属存在的模型 | 0 行 |
+| V6 | 任务与对话同属一个用户 | 0 行 |
+| V7 | 无孤立的执行、调用、工具、资料与授权记录 | 0 行 |
+| V8 | 授权与价格版本唯一约束复核 | 0 行 |
+| V9 | 预算为正 | 0 行 |
+| V10 | 已知费用超过预算的轮次 | 允许有行，对应 BILL-04 |
+
+数据库断言只覆盖 2 号可观测的一致性；业务流程正确性仍由 1 号按 spec 验收标准整体测试与验收，两者衔接处是：V1–V9 通过后，再按 `DEVELOPMENT.md` 第 5 节的验证重点执行端到端流程。
