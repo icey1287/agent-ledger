@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Desk ER diagram — views</title>
+<title>Agent Desk ER diagram</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <style>
 :root{--bg:#f5f7fb;--paper:#fff;--ink:#0f172a;--muted:#64748b;--line:#e2e8f0}
@@ -30,8 +30,6 @@ h1{margin:6px 0 0;font-size:24px;font-weight:600;letter-spacing:-.02em}
 .key-chip.blue{background:#dbeafe;color:#1d4ed8}
 .cardinality{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:#334155;background:#f1f5f9;border-radius:4px;padding:1px 5px}
 .mermaid{min-width:1200px}
-.mermaid.compact{min-width:900px}
-.mermaid.tiny{min-width:430px}
 .notes{background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:20px 26px}
 .notes h2{margin:0 0 10px;font-size:15px;font-weight:600}
 .notes .meta{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
@@ -57,7 +55,7 @@ h1{margin:6px 0 0;font-size:24px;font-weight:600;letter-spacing:-.02em}
 <div>
 <div class="eyebrow">Database design · v1.2</div>
 <h1>Agent Desk ER diagram</h1>
-<p class="sub">Four layers, five entity groups. Overview for structure, full detail for field lookup, and a dedicated view for the single cross-module reconciliation path. v1.2 adds per-call rate snapshots, mandatory tool grants, and a database trigger enforcing task ownership. The DDL defines 15 tables; agent configuration tables are documented in section 14, not yet drawn here.</p>
+<p class="sub">One complete diagram: 13 core entities, 18 relationships, four layers and five entity groups. All attributes and the cross-module reconciliation path are shown together. v1.2 adds per-call rate snapshots, mandatory tool grants, and a database trigger enforcing task ownership. The DDL defines 15 tables; agent configuration tables are documented in section 14, not drawn here.</p>
 </div>
 <div class="stats">
 <div class="stat"><b>13</b><span>entities</span></div>
@@ -82,96 +80,8 @@ h1{margin:6px 0 0;font-size:24px;font-weight:600;letter-spacing:-.02em}
 <span class="legend-item"><span class="cardinality">|{</span> one or more</span>
 </div>
 <section class="card">
-<h2>Overview</h2>
-<p class="hint">Entities, key fields and relationships only. The reconciliation path is shown separately below to keep the main flow clear.</p>
-<pre class="mermaid compact">
-erDiagram
-    direction LR
-
-    USERS ||--o{ SUBSCRIPTIONS : "subscribes"
-    PLANS ||--o{ SUBSCRIPTIONS : "plan source"
-    SUBSCRIPTIONS |o--o{ TASKS : "entitles tasks"
-    PLANS {
-        string id PK
-        string code UK
-    }
-    SUBSCRIPTIONS {
-        string id PK
-        string user_id FK
-        string plan_id FK
-    }
-    USERS ||--o{ SESSIONS : "starts session"
-    USERS ||--o{ CONVERSATIONS : "owns"
-    USERS ||--o{ TASKS : "initiates"
-    CONVERSATIONS ||--o{ TASKS : "contains tasks"
-    MODELS ||--o{ MODEL_PRICES : "price versions"
-    MODEL_PRICES ||--o{ TASKS : "locks default price"
-    MODEL_PRICES ||--o{ MODEL_CALLS : "prices each call"
-    TASKS ||--o{ MATERIALS : "uploads materials"
-    TASKS ||--o{ TASK_TOOL_GRANTS : "grants tools"
-    TASKS ||--o{ AGENT_RUNS : "runs"
-    AGENT_RUNS |o--o{ AGENT_RUNS : "delegates sub-role"
-    AGENT_RUNS ||--o{ MODEL_CALLS : "model calls"
-    AGENT_RUNS ||--o{ TOOL_CALLS : "tool calls"
-    TASK_TOOL_GRANTS ||--o{ TOOL_CALLS : "authorization basis"
-
-    USERS {
-        string id PK
-        string username UK
-    }
-    SESSIONS {
-        string id PK
-        string user_id FK
-        string token_hash UK
-    }
-    MODELS {
-        string id PK
-        string name UK
-    }
-    MODEL_PRICES {
-        string id PK
-        string model_id FK
-    }
-    CONVERSATIONS {
-        string id PK
-        string user_id FK
-    }
-    TASKS {
-        string id PK
-        string conversation_id FK
-        string user_id FK
-        string subscription_id FK
-        string price_id FK
-    }
-    MATERIALS {
-        string id PK
-        string task_id FK
-    }
-    TASK_TOOL_GRANTS {
-        string id PK
-        string task_id FK
-    }
-    AGENT_RUNS {
-        string id PK
-        string task_id FK
-        string parent_id FK
-    }
-    MODEL_CALLS {
-        string id PK
-        string run_id FK
-        string price_id FK
-        string reconciled_by FK
-    }
-    TOOL_CALLS {
-        string id PK
-        string run_id FK
-        string grant_id FK
-    }
-</pre>
-</section>
-<section class="card">
-<h2>Full detail</h2>
-<p class="hint">All attributes, including the v1.2 rate snapshot on MODEL_CALLS. Same entities, keys and cardinalities as the overview.</p>
+<h2>Complete entity relationship diagram</h2>
+<p class="hint">All 13 core entities with full attributes, all 18 relationships, and the cross-module reconciliation path (<code>USERS |o--o{ MODEL_CALLS : reconciles</code>) in one view. This is the single authoritative ER diagram.</p>
 <pre class="mermaid">
 erDiagram
     direction LR
@@ -179,27 +89,10 @@ erDiagram
     USERS ||--o{ SUBSCRIPTIONS : "subscribes"
     PLANS ||--o{ SUBSCRIPTIONS : "plan source"
     SUBSCRIPTIONS |o--o{ TASKS : "entitles tasks"
-    PLANS {
-        string id PK
-        string code UK
-        int duration_days
-        decimal display_price
-        boolean enabled
-    }
-    SUBSCRIPTIONS {
-        string id PK
-        string user_id FK
-        string plan_id FK
-        string plan_name
-        decimal display_price
-        timestamp starts_at
-        timestamp ends_at
-        string status
-        timestamp cancelled_at
-    }
     USERS ||--o{ SESSIONS : "starts session"
     USERS ||--o{ CONVERSATIONS : "owns"
     USERS ||--o{ TASKS : "initiates"
+    USERS |o--o{ MODEL_CALLS : "reconciles"
     CONVERSATIONS ||--o{ TASKS : "contains tasks"
     MODELS ||--o{ MODEL_PRICES : "price versions"
     MODEL_PRICES ||--o{ TASKS : "locks default price"
@@ -239,6 +132,24 @@ erDiagram
         decimal input_rate
         decimal output_rate
         decimal cached_rate
+    }
+    PLANS {
+        string id PK
+        string code UK
+        int duration_days
+        decimal display_price
+        boolean enabled
+    }
+    SUBSCRIPTIONS {
+        string id PK
+        string user_id FK
+        string plan_id FK
+        string plan_name
+        decimal display_price
+        timestamp starts_at
+        timestamp ends_at
+        string status
+        timestamp cancelled_at
     }
     CONVERSATIONS {
         string id PK
@@ -304,31 +215,6 @@ erDiagram
         string tool
         json arguments
         string status
-    }
-</pre>
-</section>
-<section class="card">
-<h2>Cross-module reconciliation</h2>
-<p class="hint">USERS |o--o{ MODEL_CALLS: an administrator verifies usage whose token counts were unknown at call time. The bill is recalculated from the call's own rate snapshot.</p>
-<pre class="mermaid tiny">
-erDiagram
-    USERS |o--o{ MODEL_CALLS : "reconciles"
-    USERS {
-        string id PK
-        string role
-    }
-    MODEL_CALLS {
-        string id PK
-        string run_id FK
-        string price_id FK
-        string currency
-        decimal input_rate_snapshot
-        decimal output_rate_snapshot
-        decimal cached_rate_snapshot
-        string rate_unit
-        string reconciled_by FK
-        string usage_status
-        decimal cost
     }
 </pre>
 </section>

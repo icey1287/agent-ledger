@@ -5,7 +5,7 @@
 | 交付项 | 文件 | 内容 |
 | --- | --- | --- |
 | ER 图 | 本文第 2 节 | 13 张实体的关系、基数与外键；v1.2 快照与必填授权 |
-| ER 图（唯一） | `docs/er-diagram.html`（交互预览）、`docs/er-diagram.png`（静态图片） | 同一份 v1.2 三视图：概览 / 完整 / 跨模块。旧版对照图已移除，不再保留第二份 ER 图 |
+| ER 图（唯一） | `docs/er-diagram.html`（交互预览）、`docs/er-diagram.png`（静态图片） | 单一完整 v1.2 视图：13 实体 + 18 关系（含跨模块对账线），HTML 与 PNG 内容一致。旧版对照图已移除，不再保留第二份 ER 图 |
 | 表结构 | `db/schema.sql`、本文第 3 节 | PostgreSQL 17 DDL、字段、约束、索引 |
 | 样例数据 | `db/sample-data.sql` | 3 用户（含管理员） / 3 模型 / 4 轮次 / 6 次调用，覆盖完成、超预算、待核实、已停止 |
 | 业务 SQL | `db/business-queries.sql` | 对话列表、轮次详情、费用汇总、待核实队列等 12 条 |
@@ -36,24 +36,6 @@ erDiagram
     USERS ||--o{ SUBSCRIPTIONS : "subscribes"
     PLANS ||--o{ SUBSCRIPTIONS : "plan source"
     SUBSCRIPTIONS |o--o{ TASKS : "entitles tasks"
-    PLANS {
-        string id PK
-        string code UK
-        int duration_days
-        decimal display_price
-        boolean enabled
-    }
-    SUBSCRIPTIONS {
-        string id PK
-        string user_id FK
-        string plan_id FK
-        string plan_name
-        decimal display_price
-        timestamp starts_at
-        timestamp ends_at
-        string status
-        timestamp cancelled_at
-    }
     USERS ||--o{ SESSIONS : "starts session"
     USERS ||--o{ CONVERSATIONS : "owns"
     USERS ||--o{ TASKS : "initiates"
@@ -97,6 +79,24 @@ erDiagram
         decimal input_rate
         decimal output_rate
         decimal cached_rate
+    }
+    PLANS {
+        string id PK
+        string code UK
+        int duration_days
+        decimal display_price
+        boolean enabled
+    }
+    SUBSCRIPTIONS {
+        string id PK
+        string user_id FK
+        string plan_id FK
+        string plan_name
+        decimal display_price
+        timestamp starts_at
+        timestamp ends_at
+        string status
+        timestamp cancelled_at
     }
     CONVERSATIONS {
         string id PK
