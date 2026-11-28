@@ -11,6 +11,7 @@
 
 | 修改涉及 | 先读 |
 | --- | --- |
+| 套餐、订阅有效期、任务资格 | [套餐与订阅](spec/subscriptions.md) |
 | 注册、登录、会话、用户隔离 | [账号与访问控制](spec/accounts.md) |
 | 聊天界面、消息历史、连续追问 | [对话与消息](spec/conversations.md) |
 | TXT / PDF、资料读取、工具授权 | [资料与工具权限](spec/materials-and-permissions.md) |

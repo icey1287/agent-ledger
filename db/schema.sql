@@ -64,6 +64,18 @@ COMMENT ON TABLE model_prices IS '价格按版本追加，历史版本不可修�
 -- ---------------------------------------------------------------------------
 -- 3. 对话、轮次与资料
 -- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agents (
+ id VARCHAR(36) PRIMARY KEY,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ user_id VARCHAR(36) NOT NULL REFERENCES users(id),
+ model_id VARCHAR(36) NOT NULL REFERENCES models(id),
+ name VARCHAR(100) NOT NULL,
+ instruction TEXT NOT NULL,
+ enabled BOOLEAN NOT NULL DEFAULT TRUE,
+ CONSTRAINT ck_agents_text CHECK (length(trim(name)) > 0 AND length(trim(instruction)) > 0)
+);
+CREATE INDEX IF NOT EXISTS ix_agents_user_id ON agents(user_id);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id         VARCHAR(36) PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -87,6 +99,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     result          TEXT NOT NULL DEFAULT '',   -- 助手最终回复；角色中间输出不算
     reason          TEXT NOT NULL DEFAULT '',
     finished_at     TIMESTAMPTZ,
+    execution_mode VARCHAR(16) NOT NULL DEFAULT 'sequential',
+    CONSTRAINT ck_tasks_execution_mode CHECK (execution_mode IN ('sequential','parallel')),
     CONSTRAINT ck_tasks_budget CHECK (budget > 0),
     CONSTRAINT ck_tasks_status CHECK (status IN (
         'pending', 'running', 'completed', 'stopped_budget',
@@ -99,6 +113,20 @@ CREATE INDEX IF NOT EXISTS ix_tasks_user_id ON tasks (user_id);
 CREATE INDEX IF NOT EXISTS ix_tasks_status ON tasks (status);
 CREATE INDEX IF NOT EXISTS ix_tasks_conv_created ON tasks (conversation_id, created_at, id);
 COMMENT ON COLUMN tasks.price_id IS '轮次创建时锁定，之后费率调整不改变历史账目';
+
+CREATE TABLE IF NOT EXISTS task_agents (
+ id VARCHAR(36) PRIMARY KEY,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ task_id VARCHAR(36) NOT NULL REFERENCES tasks(id),
+ agent_id VARCHAR(36) NOT NULL REFERENCES agents(id),
+ price_id VARCHAR(36) NOT NULL REFERENCES model_prices(id),
+ name VARCHAR(100) NOT NULL,
+ instruction TEXT NOT NULL,
+ position INTEGER NOT NULL,
+ UNIQUE(task_id, agent_id), UNIQUE(task_id, position),
+ CONSTRAINT ck_task_agents_position CHECK (position >= 0)
+);
+CREATE INDEX IF NOT EXISTS ix_task_agents_task_id ON task_agents(task_id);
 
 CREATE TABLE IF NOT EXISTS materials (
     id         VARCHAR(36) PRIMARY KEY,
@@ -128,6 +156,8 @@ CREATE INDEX IF NOT EXISTS ix_task_tool_grants_task_id ON task_tool_grants (task
 -- 4. Agent 执行、模型调用与工具调用
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS agent_runs (
+    task_agent_id VARCHAR(36) REFERENCES task_agents(id),
+    price_id VARCHAR(36) REFERENCES model_prices(id),
     id          VARCHAR(36) PRIMARY KEY,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     task_id     VARCHAR(36) NOT NULL REFERENCES tasks(id),
@@ -137,7 +167,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     instruction TEXT NOT NULL DEFAULT '',
     output      TEXT NOT NULL DEFAULT '',
     finished_at TIMESTAMPTZ,
-    CONSTRAINT ck_agent_runs_role CHECK (role IN ('coordinator', 'summary', 'review')),
+    CONSTRAINT ck_agent_runs_role CHECK (role IN ('coordinator', 'summary', 'review', 'worker')),
     CONSTRAINT ck_agent_runs_status CHECK (status IN ('running', 'completed', 'stopped', 'interrupted'))
 );
 CREATE INDEX IF NOT EXISTS ix_agent_runs_task_id ON agent_runs (task_id);
@@ -191,3 +221,34 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 );
 CREATE INDEX IF NOT EXISTS ix_tool_calls_run_id ON tool_calls (run_id);
 COMMENT ON COLUMN tool_calls.grant_id IS '委派类工具为 NULL；资料工具记录本次判断所依据的授权行';
+
+-- Subscription feature: additive tables, immutable enrollment snapshots, historical task links.
+CREATE TABLE IF NOT EXISTS plans (
+ id VARCHAR(36) PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ code VARCHAR(32) NOT NULL UNIQUE, name VARCHAR(100) NOT NULL,
+ duration_days INTEGER NOT NULL, display_price NUMERIC(12,2) NOT NULL,
+ currency VARCHAR(3) NOT NULL DEFAULT 'USD', enabled BOOLEAN NOT NULL DEFAULT TRUE,
+ CONSTRAINT ck_plans_duration CHECK (duration_days > 0),
+ CONSTRAINT ck_plans_price CHECK (display_price >= 0)
+);
+CREATE TABLE IF NOT EXISTS subscriptions (
+ id VARCHAR(36) PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ user_id VARCHAR(36) NOT NULL REFERENCES users(id), plan_id VARCHAR(36) NOT NULL REFERENCES plans(id),
+ plan_name VARCHAR(100) NOT NULL, display_price NUMERIC(12,2) NOT NULL, currency VARCHAR(3) NOT NULL,
+ starts_at TIMESTAMPTZ NOT NULL, ends_at TIMESTAMPTZ NOT NULL,
+ status VARCHAR(16) NOT NULL DEFAULT 'active', cancelled_at TIMESTAMPTZ,
+ CONSTRAINT uq_subscriptions_id_user UNIQUE (id,user_id),
+ CONSTRAINT ck_subscriptions_period CHECK (ends_at > starts_at),
+ CONSTRAINT ck_subscriptions_price CHECK (display_price >= 0),
+ CONSTRAINT ck_subscriptions_status CHECK (status IN ('active','cancelled','expired')),
+ CONSTRAINT ck_subscriptions_cancelled CHECK ((status = 'cancelled' AND cancelled_at IS NOT NULL) OR (status <> 'cancelled' AND cancelled_at IS NULL))
+);
+CREATE INDEX IF NOT EXISTS ix_subscriptions_user_id ON subscriptions(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_active_user ON subscriptions(user_id) WHERE status='active';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS subscription_id VARCHAR(36);
+DO $sub$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_tasks_subscription_owner' AND conrelid='tasks'::regclass) THEN
+  ALTER TABLE tasks ADD CONSTRAINT fk_tasks_subscription_owner FOREIGN KEY (subscription_id,user_id) REFERENCES subscriptions(id,user_id);
+ END IF;
+END $sub$;

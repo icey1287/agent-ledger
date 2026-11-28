@@ -5,15 +5,17 @@ import TurnDetails from "./TurnDetails.vue";
 import { api, labels, messageOf, money } from "../api/client";
 import type {
   Catalog,
+  Agent,
   Conversation,
   ConversationDetail,
   Detail,
 } from "../api/client";
-const props = defineProps<{ id: string; catalog: Catalog }>();
+const props = defineProps<{ id: string; catalog: Catalog; agents: Agent[] }>();
 const emit = defineEmits<{ created: [id: string]; changed: [] }>();
 const chat = ref<ConversationDetail | null>(null),
   draft = ref(""),
   files = ref<File[]>([]);
+const team = ref<string[]>([]), mode = ref("parallel");
 const model = ref(""),
   budget = ref("1"),
   enabledTools = ref(["read_material", "search_materials"]),
@@ -49,8 +51,8 @@ function progress(turn: Detail) {
   const call = turn.calls.find((c) => c.status === "in_flight");
   if (turn.status === "cancelled" && call)
     return "已停止，正在结算已发出的调用…";
-  const run = [...turn.runs].reverse().find((r) => r.status === "running");
-  return run ? `${labels[run.role]}正在处理…` : "正在准备回复…";
+  const running = turn.runs.filter(r => r.status === "running" && r.role !== "coordinator");
+  return running.length ? `${running.map(r => labels[r.name] ?? r.name).join("、")}正在处理…` : "协调 Agent 正在处理…";
 }
 async function scrollDown(force = false) {
   const el = scroller.value;
@@ -105,6 +107,8 @@ async function send() {
     body.set("message", draft.value.trim());
     body.set("model_id", model.value);
     body.set("budget", budget.value);
+    body.set("agent_ids", JSON.stringify(team.value));
+    body.set("execution_mode", mode.value);
     body.set("tools", JSON.stringify(enabledTools.value));
     if (expiry.value)
       body.set("expires_at", new Date(expiry.value).toISOString());
@@ -244,7 +248,7 @@ onUnmounted(() => {
               <div class="reply-meta">
                 <span>{{ labels[turn.status] }}</span
                 ><span
-                  >{{ money(turn.cost) }} USD{{
+                  >{{ money(turn.cost) }} {{ turn.currency }}{{
                     turn.unknown_calls ? "（已知部分）" : ""
                   }}</span
                 ><span v-if="turn.unknown_calls">用量待确认</span>
@@ -262,6 +266,14 @@ onUnmounted(() => {
       </p>
       <form @submit.prevent="send" class="message-composer">
         <div v-if="settings" class="chat-settings">
+          <fieldset class="team-picker">
+            <legend>本轮团队</legend>
+            <p v-if="!agents.some(a => a.enabled)" class="muted small">在左侧“我的 Agents”创建成员后，即可选择团队。</p>
+            <label v-for="agent in agents.filter(a => a.enabled)" :key="agent.id" class="check"><input v-model="team" type="checkbox" :value="agent.id" />{{ agent.name }} · {{ catalog.models.find(m => m.id === agent.model_id)?.display_name ?? '模型不可用' }}</label>
+            <label v-if="team.length">执行方式<select v-model="mode"><option value="parallel">并行：独立处理同一任务，再汇总</option><option value="sequential">串行：按选择顺序接力</option></select></label>
+            <p class="muted small" v-if="team.length">选择顺序：{{ team.map(id => agents.find(a => a.id === id)?.name).join(' → ') }}。下方模型用于协调汇总。并行最多同时运行 4 个成员。</p>
+            <p class="muted small" v-else>未选团队时，由协调 Agent 按需调用内置摘要和审核角色。</p>
+          </fieldset>
           <div class="form-grid">
             <label
               >每轮预算（USD）<input
@@ -292,7 +304,7 @@ onUnmounted(() => {
             >
           </div>
           <p class="muted small">
-            预算达到后停止后续调用，最后一次调用可能超额。设置仅对下一条消息生效。
+            预算达到后停止后续调用，已发出的调用（含并行调用）可能使总费用超额。设置仅对下一条消息生效。
           </p>
           <p class="muted small">
             {{ selectedModel?.price.billing_note }} 输入 / 输出：{{
@@ -339,7 +351,7 @@ onUnmounted(() => {
               accept=".txt,.pdf"
               multiple
               @change="attach"
-            /><select v-model="model" aria-label="选择模型">
+            /><select v-model="model" aria-label="选择协调模型">
               <option
                 v-for="item in catalog.models.filter((m) => m.enabled)"
                 :key="item.id"

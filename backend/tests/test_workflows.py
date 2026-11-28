@@ -24,6 +24,8 @@ def login(client, name):
 
 def prepare(client):
     login(client, "alice")
+    plan = client.get("/api/plans").json()[0]["id"]
+    assert client.post("/api/subscriptions", json={"plan_id": plan}).status_code == 200
     model = client.get("/api/models").json()["models"][0]["id"]
     conv = client.post("/api/conversations").json()["id"]
     return conv, {"model_id": model, "budget": "1", "message": "test"}

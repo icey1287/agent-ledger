@@ -44,7 +44,6 @@ def initialize_database(engine):
     from app.entities import Base
 
     Base.metadata.create_all(engine)
-    upgrade_conversations(engine, sessions(engine))
     schema = engine.get_execution_options().get("schema_translate_map", {}).get(None)
     migration = Path(__file__).resolve().parents[2] / "db" / "migration.sql"
     with engine.begin() as conn:
@@ -52,6 +51,31 @@ def initialize_database(engine):
             quote = conn.dialect.identifier_preparer.quote
             conn.exec_driver_sql(f"SET LOCAL search_path TO {quote(schema)}")
         # Serialize concurrent migration attempts within this schema/database.
+        conn.exec_driver_sql(
+            "SELECT pg_advisory_xact_lock(hashtext(current_schema()), 5120)"
+        )
+        conn.exec_driver_sql(
+            migration.with_name("subscriptions.sql").read_text(encoding="utf-8"),
+            execution_options={"no_parameters": True},
+        )
+    with engine.begin() as conn:
+        if schema:
+            conn.exec_driver_sql(
+                f"SET LOCAL search_path TO {conn.dialect.identifier_preparer.quote(schema)}"
+            )
+        conn.exec_driver_sql(
+            "SELECT pg_advisory_xact_lock(hashtext(current_schema()), 5120)"
+        )
+        conn.exec_driver_sql(
+            migration.with_name("agents.sql").read_text(encoding="utf-8"),
+            execution_options={"no_parameters": True},
+        )
+    upgrade_conversations(engine, sessions(engine))
+    with engine.begin() as conn:
+        if schema:
+            conn.exec_driver_sql(
+                f"SET LOCAL search_path TO {conn.dialect.identifier_preparer.quote(schema)}"
+            )
         conn.exec_driver_sql(
             "SELECT pg_advisory_xact_lock(hashtext(current_schema()), 5120)"
         )

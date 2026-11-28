@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.agents import snapshot_team
 from app.auth import current_user, db_session
 from app.catalog import latest_price
 from app.entities import (
@@ -20,10 +21,12 @@ from app.entities import (
     Price,
     Run,
     Task,
+    TaskAgent,
     ToolCall,
     now,
 )
 from app.materials import extract
+from app.subscriptions import require_subscription
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 TOOLS = ("read_material", "search_materials")
@@ -55,6 +58,8 @@ def task_summary(db, task):
     return {
         "id": task.id,
         "title": task.title,
+        "subscription_id": task.subscription_id,
+        "execution_mode": task.execution_mode,
         "status": task.status,
         "reason": task.reason,
         "budget": str(task.budget),
@@ -102,6 +107,8 @@ def create_task(
     text: Annotated[str, Form()] = "",
     tools: Annotated[str, Form()] = '["read_material", "search_materials"]',
     expires_at: Annotated[str, Form()] = "",
+    agent_ids: Annotated[str, Form()] = "[]",
+    execution_mode: Annotated[str, Form()] = "sequential",
     files: list[UploadFile] = File(default=[]),
     user=Depends(current_user),
     db=Depends(db_session),
@@ -117,6 +124,9 @@ def create_task(
             or amount >= Decimal("1e12")
             or amount != amount.quantize(Decimal("1e-12"))
         ):
+            raise ValueError
+        team_ids = json.loads(agent_ids)
+        if execution_mode not in ("sequential", "parallel"):
             raise ValueError
         selected = json.loads(tools)
         if not isinstance(selected, list) or any(t not in TOOLS for t in selected):
@@ -140,6 +150,7 @@ def create_task(
     )
     for file in files:
         materials.append(extract(file.filename or "upload", file.file.read()))
+    subscription = require_subscription(db, user.id)
     conversation = None
     if conversation_id:
         conversation = own_conversation(db, conversation_id, user.id, lock=True)
@@ -164,14 +175,17 @@ def create_task(
     price = latest_price(db, model_id)
     task = Task(
         user_id=user.id,
+        subscription_id=subscription.id,
         conversation_id=conversation_id,
         price_id=price.id,
         title=title,
         instruction=instruction,
         budget=amount,
+        execution_mode=execution_mode,
     )
     db.add(task)
     db.flush()
+    snapshot_team(db, task, team_ids, price.currency)
     db.add_all(Material(task_id=task.id, **m) for m in materials)
     db.add_all(Grant(task_id=task.id, tool=t, expires_at=expiry) for t in set(selected))
     if conversation:
@@ -206,11 +220,35 @@ def task_detail(task_id: str, user=Depends(current_user), db=Depends(db_session)
     runs = db.scalars(
         select(Run).where(Run.task_id == task_id).order_by(Run.created_at)
     ).all()
+    snapshots = {
+        a.id: a
+        for a in db.scalars(select(TaskAgent).where(TaskAgent.task_id == task_id))
+    }
+    result["team"] = [
+        {
+            "agent_id": a.agent_id,
+            "name": a.name,
+            "instruction": a.instruction,
+            "price_id": a.price_id,
+            "position": a.position,
+        }
+        for a in sorted(snapshots.values(), key=lambda a: a.position)
+    ]
     roles = {r.id: r.role for r in runs}
+    names = {
+        r.id: snapshots[r.task_agent_id].name if r.task_agent_id else r.role
+        for r in runs
+    }
+    prices = {r.id: db.get(Price, r.price_id or task.price_id) for r in runs}
+    models = {r.id: db.get(Model, prices[r.id].model_id).name for r in runs}
     result["runs"] = [
         {
             "id": r.id,
             "role": r.role,
+            "name": names[r.id],
+            "model_name": models[r.id],
+            "price_version": prices[r.id].version,
+            "finished_at": r.finished_at,
             "status": r.status,
             "instruction": r.instruction,
             "output": r.output,
@@ -222,6 +260,9 @@ def task_detail(task_id: str, user=Depends(current_user), db=Depends(db_session)
         {
             "id": c.id,
             "role": roles[c.run_id],
+            "agent_name": names[c.run_id],
+            "model_name": models[c.run_id],
+            "price_version": prices[c.run_id].version,
             "status": c.status,
             "usage_status": c.usage_status,
             "input_tokens": c.input_tokens,
@@ -240,6 +281,9 @@ def task_detail(task_id: str, user=Depends(current_user), db=Depends(db_session)
             "id": c.id,
             "tool": c.tool,
             "role": roles[c.run_id],
+            "agent_name": names[c.run_id],
+            "model_name": models[c.run_id],
+            "price_version": prices[c.run_id].version,
             "status": c.status,
             "arguments": c.arguments,
             "output": c.output,
@@ -368,6 +412,8 @@ def send_message(
     budget: Annotated[str, Form()],
     tools: Annotated[str, Form()] = '["read_material", "search_materials"]',
     expires_at: Annotated[str, Form()] = "",
+    agent_ids: Annotated[str, Form()] = "[]",
+    execution_mode: Annotated[str, Form()] = "sequential",
     files: list[UploadFile] = File(default=[]),
     user=Depends(current_user),
     db=Depends(db_session),
@@ -382,6 +428,8 @@ def send_message(
         text="",
         tools=tools,
         expires_at=expires_at,
+        agent_ids=agent_ids,
+        execution_mode=execution_mode,
         files=files,
         user=user,
         db=db,

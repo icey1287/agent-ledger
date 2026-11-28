@@ -10,11 +10,14 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -77,6 +80,66 @@ class Price(Identity, Base):
     )
 
 
+class Agent(Identity, Base):
+    __tablename__ = "agents"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    model_id: Mapped[str] = mapped_column(ForeignKey("models.id"))
+    name: Mapped[str] = mapped_column(String(100))
+    instruction: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(name)) > 0 AND length(trim(instruction)) > 0",
+            name="ck_agents_text",
+        ),
+    )
+
+
+class Plan(Identity, Base):
+    __tablename__ = "plans"
+    code: Mapped[str] = mapped_column(String(32), unique=True)
+    name: Mapped[str] = mapped_column(String(100))
+    duration_days: Mapped[int] = mapped_column(Integer)
+    display_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (
+        CheckConstraint("duration_days > 0", name="ck_plans_duration"),
+        CheckConstraint("display_price >= 0", name="ck_plans_price"),
+    )
+
+
+class Subscription(Identity, Base):
+    __tablename__ = "subscriptions"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("plans.id"))
+    plan_name: Mapped[str] = mapped_column(String(100))
+    display_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(3))
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_subscriptions_id_user"),
+        CheckConstraint("ends_at > starts_at", name="ck_subscriptions_period"),
+        CheckConstraint("display_price >= 0", name="ck_subscriptions_price"),
+        CheckConstraint(
+            "status IN ('active','cancelled','expired')", name="ck_subscriptions_status"
+        ),
+        CheckConstraint(
+            "(status = 'cancelled' AND cancelled_at IS NOT NULL) OR (status <> 'cancelled' AND cancelled_at IS NULL)",
+            name="ck_subscriptions_cancelled",
+        ),
+        Index(
+            "uq_subscriptions_active_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+
 class Conversation(Identity, Base):
     __tablename__ = "conversations"
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
@@ -90,6 +153,10 @@ class Task(Identity, Base):
         ForeignKey("conversations.id"), index=True, nullable=True
     )
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    execution_mode: Mapped[str] = mapped_column(
+        String(16), default="sequential", server_default="sequential"
+    )
+    subscription_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     price_id: Mapped[str] = mapped_column(ForeignKey("model_prices.id"))
     title: Mapped[str] = mapped_column(String(200))
     instruction: Mapped[str] = mapped_column(Text)
@@ -100,7 +167,35 @@ class Task(Identity, Base):
     finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    __table_args__ = (CheckConstraint("budget > 0"),)
+    __table_args__ = (
+        CheckConstraint("budget > 0"),
+        CheckConstraint(
+            "execution_mode IN ('sequential', 'parallel')",
+            name="ck_tasks_execution_mode",
+        ),
+        ForeignKeyConstraint(
+            ["subscription_id", "user_id"],
+            ["subscriptions.id", "subscriptions.user_id"],
+            name="fk_tasks_subscription_owner",
+        ),
+    )
+
+
+class TaskAgent(Identity, Base):
+    """Admission-time configuration; later profile edits cannot change a task."""
+
+    __tablename__ = "task_agents"
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"))
+    price_id: Mapped[str] = mapped_column(ForeignKey("model_prices.id"))
+    name: Mapped[str] = mapped_column(String(100))
+    instruction: Mapped[str] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer)
+    __table_args__ = (
+        UniqueConstraint("task_id", "agent_id"),
+        UniqueConstraint("task_id", "position"),
+        CheckConstraint("position >= 0", name="ck_task_agents_position"),
+    )
 
 
 class Material(Identity, Base):
@@ -133,6 +228,8 @@ class Run(Identity, Base):
     parent_id: Mapped[str | None] = mapped_column(
         ForeignKey("agent_runs.id"), nullable=True
     )
+    task_agent_id: Mapped[str | None] = mapped_column(ForeignKey("task_agents.id"))
+    price_id: Mapped[str | None] = mapped_column(ForeignKey("model_prices.id"))
     role: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), default="running")
     instruction: Mapped[str] = mapped_column(Text, default="")

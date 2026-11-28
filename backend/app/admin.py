@@ -75,7 +75,7 @@ def reconcile(
     }
     try:
         incoming, outgoing, cached, cost = calculate(
-            usage, db.get(Price, task.price_id)
+            usage, db.get(Price, run.price_id or task.price_id)
         )
     except UnknownUsage as exc:
         raise HTTPException(422, str(exc)) from None

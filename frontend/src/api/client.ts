@@ -1,3 +1,4 @@
+export interface Agent { id: string; name: string; instruction: string; model_id: string; enabled: boolean; }
 export interface User {
   id: string;
   username: string;
@@ -27,6 +28,8 @@ export interface Catalog {
   base_url?: string;
 }
 export interface Task {
+  execution_mode: "parallel" | "sequential";
+  subscription_id: string | null;
   id: string;
   title: string;
   status: string;
@@ -50,6 +53,7 @@ export interface Grant {
   revoked_at: string | null;
 }
 export interface Run {
+  name: string; model_name: string; price_version: number; finished_at: string | null;
   id: string;
   role: string;
   status: string;
@@ -58,6 +62,7 @@ export interface Run {
   created_at: string;
 }
 export interface Call {
+  agent_name: string; model_name: string; price_version: number;
   id: string;
   role: string;
   status: string;
@@ -167,6 +172,7 @@ export const labels: Record<string, string> = {
   awaiting_usage: "用量待核实",
   stopped_budget: "达到预算",
   stopped_permission: "授权失效",
+  worker: "团队 Agent",
   coordinator: "协调 Agent",
   summary: "摘要 Agent",
   review: "审核 Agent",
@@ -189,4 +195,12 @@ export interface Conversation {
 }
 export interface ConversationDetail extends Conversation {
   turns: Detail[];
+}
+
+export interface Plan {
+  id: string; name: string; duration_days: number; display_price: string; currency: string;
+}
+export interface Subscription {
+  id: string; plan_id: string; plan_name: string; display_price: string; currency: string;
+  starts_at: string; ends_at: string; status: string; cancelled_at: string | null; eligible: boolean;
 }

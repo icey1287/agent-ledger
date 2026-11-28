@@ -4,7 +4,7 @@
 
 | 交付项 | 文件 | 内容 |
 | --- | --- | --- |
-| ER 图 | 本文第 2 节 | 11 张实体的关系、基数与外键 |
+| ER 图 | 本文第 2 节 | 13 张实体的关系、基数与外键 |
 | 表结构 | `db/schema.sql`、本文第 3 节 | PostgreSQL 17 DDL、字段、约束、索引 |
 | 样例数据 | `db/sample-data.sql` | 3 用户（含管理员） / 3 模型 / 4 轮次 / 6 次调用，覆盖完成、超预算、待核实、已停止 |
 | 业务 SQL | `db/business-queries.sql` | 对话列表、轮次详情、费用汇总、待核实队列等 12 条 |
@@ -21,7 +21,7 @@
 - 对话是上下文与资料隔离边界；一轮消息对应一个 `tasks` 行，固定模型价格版本、预算与工具授权。
 - 费用按模型实际返回的 token 和**创建轮次时锁定**的价格版本计算，历史账目不随现价变化。
 - 用量未知时费用为 `NULL`，禁止记 0 或估算值。
-- 不实现订阅、充值、积分、周期额度和支付结算；计费是**用量账目**，不是资金账户。
+- 实现套餐与订阅有效期，不实现充值、积分、周期额度和真实支付结算；调用计费是**用量账目**，不是资金账户。
 
 因此本设计没有 `wallets` / `balances` / `payments` 表。用户要求的“扣费逻辑”对应的是**调用成功后原子写入一次费用记录**，以及按轮累计判断软预算，而不是从余额扣减。
 
@@ -29,6 +29,27 @@
 
 ```mermaid
 erDiagram
+    USERS ||--o{ SUBSCRIPTIONS : "开通"
+    PLANS ||--o{ SUBSCRIPTIONS : "套餐来源"
+    SUBSCRIPTIONS |o--o{ TASKS : "任务资格"
+    PLANS {
+        string id PK
+        string code UK
+        int duration_days
+        decimal display_price
+        boolean enabled
+    }
+    SUBSCRIPTIONS {
+        string id PK
+        string user_id FK
+        string plan_id FK
+        string plan_name
+        decimal display_price
+        timestamp starts_at
+        timestamp ends_at
+        string status
+        timestamp cancelled_at
+    }
     USERS ||--o{ SESSIONS : "建立会话"
     USERS ||--o{ CONVERSATIONS : "拥有"
     USERS ||--o{ TASKS : "发起"
@@ -82,6 +103,7 @@ erDiagram
         string id PK
         string conversation_id FK
         string user_id FK
+        string subscription_id FK
         string price_id FK
         text instruction
         decimal budget
@@ -311,7 +333,7 @@ erDiagram
 
 | 设计项 | 现有代码位置 | 状态 |
 | --- | --- | --- |
-| 实体与 ORM 映射 | `backend/app/entities.py` | 已实现 11 张表；本文 DDL 额外补枚举 CHECK 与复合索引 |
+| 实体与 ORM 映射 | `backend/app/entities.py` | 已实现 13 张表；本文 DDL 额外补枚举 CHECK 与复合索引 |
 | 建表与兼容迁移 | `backend/app/main.py`、`backend/app/schema.py` | `create_all` + `upgrade_conversations` 增加 `conversation_id` |
 | 费用计算 | `backend/app/billing.py` | `calculate()` 已实现 Decimal 公式与 `UnknownUsage` |
 | 执行与事务 | `backend/app/execution.py` | 6 个事务的加锁顺序已实现 |
@@ -380,7 +402,7 @@ erDiagram
 
 | 场景 | 方式 | 结果 |
 | --- | --- | --- |
-| 全新数据库 | 执行 `db/schema.sql` | 11 张表 + 全部枚举 CHECK + 复合索引一次到位 |
+| 全新数据库 | 执行 `db/schema.sql` | 13 张表 + 全部枚举 CHECK + 复合索引一次到位 |
 | 现有 `create_all` 库 | 执行 `db/migration.sql` | 保留全部数据，仅补齐 CHECK 与索引 |
 | 旧版无 `conversations` 的库 | `main.py` 启动时调用 `upgrade_conversations` | 增加 `tasks.conversation_id` 并接入旧任务 |
 
@@ -434,3 +456,24 @@ Compose 启动与依赖安装见 `DEVELOPMENT.md`，本文不重复运行步骤�
 - `model_calls.cost` 是依据历史价格与 token 推导的账目快照。保存结果有利于审计，但与原始用量之间的公式一致性仍由计费函数与测试保证，不能仅靠非负 CHECK 证明。
 - 原子性：一次补录的用量、费用、操作者和任务状态在同一事务提交；失败回滚。并发控制：同一对话创建新轮次先锁对话；补录先锁任务再锁调用；外部 HTTP 期间不持有数据库锁。
 - `NULL` 表达“尚不可确认”，已知零费用是不同事实。汇总必须同时展示已知小计和未知调用数，不能将 `COALESCE(SUM(cost),0)` 单独解释成最终总账。
+
+
+## 13. 套餐与订阅实现
+
+新增 `plans` 和 `subscriptions` 两张表。套餐候选键为 id/code；duration_days > 0，display_price >= 0。订阅保存 user_id、plan_id、开通时名称/展示价/币种、UTC 起止时间、状态和取消时间；ends_at > starts_at，取消状态必须有取消时间。套餐展示价仅用于课程业务演示，不产生付款记录。
+
+部分唯一索引 `uq_subscriptions_active_user` 确保每用户最多一条 active 记录。到期可由结束时间派生，续订先将到期记录置 expired 后插入新行。业务锁用户行保证重复/并发开通返回同一有效订阅，而非延长有效期；不同套餐在有效期内返回冲突。
+
+新任务关联 subscription_id，并通过 `(subscription_id,user_id)` 复合外键保护归属。旧任务保持 NULL，无虚构的历史订阅。SQL 建库脚本包含同一 DDL；应用启动先执行 `db/subscriptions.sql` 再读取旧任务，重复迁移安全。
+
+接口：GET /api/plans、GET /api/subscriptions、POST /api/subscriptions、POST /api/subscriptions/{id}/cancel。所有接口要求登录，写操作沿用 CSRF；订阅历史和取消按当前用户过滤。管理员同样需有效订阅才能发新任务。
+
+新任务事务锁顺序为用户 → 对话 → 其他记录。取消只锁用户并更新订阅，不更改已接纳任务；用量补录仍按原任务/调用行锁顺序执行。订阅展示价与 token 费用分别展示，不能相加为真实收款。
+
+## 2026-11-28 团队扩展（当前结构）
+
+当前为 15 表：原 13 表加 agents、task_agents。用户 1:N agents，模型 1:N agents；任务 1:N task_agents，Agent 1:N task_agents，价格版本 1:N task_agents；task_agents 1:N agent_runs（实现当前每个选定成员一次执行），价格版本 1:N agent_runs。agent_runs.task_agent_id 可空用于协调者和内置角色。tasks.execution_mode 限定串行或并行。
+
+agents 由 id 决定 owner/model/name/instruction/enabled；task_agents 有候选键 id、(task_id,agent_id)、(task_id,position)。快照 name/instruction 描述当次接纳配置，不依赖可变的当前 Agent 属性，因此保留历史而非同步冗余。task_agents.price_id 固定接纳价格，agent_runs.price_id 支持内置和自建角色统一记账；自建成员运行时复制快照价格，属于受应用维护的一致性冗余。数据库 FK 保证引用存在，快照不可编辑、快照与任务归属和价格相同由受控应用路径保证，不声称由数据库完全强制。
+
+正式 ER 图需补充上述两个实体、价格到执行的关系和可选基数。已有 13 表图与 v2 报告是升级前版本，不能作为当前结构完整图。迁移和新旧路径一致性由回归测试验证。

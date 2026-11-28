@@ -21,7 +21,7 @@ BEGIN
             ('tasks',            'ck_tasks_status',            $expr$status IN ('pending', 'running', 'completed', 'stopped_budget', 'stopped_permission', 'cancelled', 'awaiting_usage', 'failed', 'interrupted')$expr$),
             ('materials',        'ck_materials_kind',          $expr$kind IN ('text', 'txt', 'pdf')$expr$),
             ('task_tool_grants', 'ck_grants_tool',             $expr$tool IN ('read_material', 'search_materials')$expr$),
-            ('agent_runs',       'ck_agent_runs_role',         $expr$role IN ('coordinator', 'summary', 'review')$expr$),
+            ('agent_runs',       'ck_agent_runs_role',         $expr$role IN ('coordinator', 'summary', 'review', 'worker')$expr$),
             ('agent_runs',       'ck_agent_runs_status',       $expr$status IN ('running', 'completed', 'stopped', 'interrupted')$expr$),
             ('model_calls',      'ck_model_calls_status',      $expr$status IN ('in_flight', 'succeeded', 'failed', 'usage_unknown', 'reconciled')$expr$),
             ('model_calls',      'ck_model_calls_usage_status',$expr$usage_status IN ('unknown', 'known')$expr$),

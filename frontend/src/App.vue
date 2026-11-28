@@ -1,24 +1,30 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
+import AgentsView from "./components/AgentsView.vue";
 import AuthView from "./components/AuthView.vue";
 import ChatView from "./components/ChatView.vue";
+import SubscriptionsView from "./components/SubscriptionsView.vue";
 import AdminPanel from "./components/AdminPanel.vue";
 import { api, messageOf, setSession } from "./api/client";
-import type { User, Conversation, Catalog } from "./api/client";
+import type { User, Conversation, Catalog, Subscription, Agent } from "./api/client";
 const user = ref<User | null>(null),
   loading = ref(true),
   error = ref("");
 const conversations = ref<Conversation[]>([]),
   catalog = ref<Catalog>({ models: [], provider_configured: false });
-const page = ref<"chat" | "admin">("chat"),
+const agents = ref<Agent[]>([]);
+const subscriptions = ref<Subscription[]>([]);
+const page = ref<"chat" | "admin" | "subscriptions" | "agents">("chat"),
   selected = ref(""),
   fresh = ref(0),
   mobileMenu = ref(false);
 async function reload() {
   try {
-    [conversations.value, catalog.value] = await Promise.all([
+    [conversations.value, catalog.value, subscriptions.value, agents.value] = await Promise.all([
       api<Conversation[]>("/conversations"),
       api<Catalog>("/models"),
+      api<Subscription[]>("/subscriptions"),
+      api<Agent[]>("/agents"),
     ]);
     error.value = "";
   } catch (e) {
@@ -90,6 +96,8 @@ onUnmounted(() => window.removeEventListener("session-expired", expired));
         ><span>Agent Desk<small>MDS5120 · 对话工作台</small></span>
       </div>
       <button class="new-chat" @click="newChat">＋ 新对话</button>
+      <button class="admin-link" @click="page = 'subscriptions'; mobileMenu = false">套餐与订阅</button>
+      <button class="admin-link" @click="page = 'agents'; mobileMenu = false">我的 Agents</button>
       <p class="sidebar-caption">最近对话</p>
       <nav class="conversation-list" aria-label="历史对话">
         <button
@@ -126,15 +134,19 @@ onUnmounted(() => window.removeEventListener("session-expired", expired));
     </aside>
     <main class="main-content" :class="{ 'chat-main': page === 'chat' }">
       <p v-if="error" class="alert error" role="alert">{{ error }}</p>
+      <div v-if="page === 'chat' && !subscriptions.some(s => s.eligible && new Date(s.ends_at).getTime() > Date.now())" class="alert">发送新消息需要有效订阅。<button class="secondary" @click="page = 'subscriptions'">选择套餐</button>历史对话仍可查看。</div>
+      <SubscriptionsView v-if="page === 'subscriptions'" @changed="reload" @chat="page = 'chat'" />
+      <AgentsView v-if="page === 'agents'" :agents="agents" :catalog="catalog" @changed="reload" />
       <ChatView
         v-if="page === 'chat'"
         :key="selected || `new-${fresh}`"
         :id="selected"
         :catalog="catalog"
+        :agents="agents"
         @created="created"
         @changed="reload"
       />
-      <AdminPanel v-else-if="user.role === 'admin'" @changed="reload" />
+      <AdminPanel v-else-if="page === 'admin' && user.role === 'admin'" @changed="reload" />
     </main>
   </div>
 </template>

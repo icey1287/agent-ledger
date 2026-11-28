@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app import admin, auth, catalog, workspaces
+from app import admin, agents, auth, catalog, subscriptions, workspaces
 from app.core.config import Settings
 from app.core.database import create_database, sessions
 from app.entities import Model, Price
@@ -57,6 +57,7 @@ def create_app(settings=None, engine=None, provider=None):
             client,
         )
         seed_model(factory, settings)
+        subscriptions.seed_plans(factory)
         runner = Runner(factory, client)
         app.state.runner = runner
         runner.recover()
@@ -88,10 +89,12 @@ def create_app(settings=None, engine=None, provider=None):
 
     for router in (
         auth.router,
+        agents.router,
         catalog.router,
         workspaces.router,
         workspaces.chat_router,
         admin.router,
+        subscriptions.router,
     ):
         app.include_router(router)
     return app

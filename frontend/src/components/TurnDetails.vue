@@ -34,11 +34,11 @@ async function revoke(grant: Grant) {
       >
     </summary>
     <p class="muted small">
-      {{ date(turn.created_at) }} · 本轮预算 {{ money(turn.budget) }} USD ·
+      {{ date(turn.created_at) }} · 本轮预算 {{ money(turn.budget) }} {{ turn.currency }} ·
       价格版本 {{ turn.price.version }}<br />{{
         turn.price.billing_note
       }}
-      最后一次调用可能超额。
+      已发出的并行调用可能使总费用超额。
     </p>
     <p v-if="error" class="alert error">{{ error }}</p>
     <div v-for="grant in turn.grants" :key="grant.tool" class="grant-row">
@@ -58,11 +58,12 @@ async function revoke(grant: Grant) {
     </div>
     <details v-for="run in turn.runs" :key="run.id" class="run">
       <summary>
-        <span class="run-dot" :class="run.role"></span>{{ labels[run.role]
-        }}<span class="badge" :class="run.status">{{
+        <span class="run-dot" :class="run.role"></span>{{ labels[run.name] ?? run.name }}<span class="badge" :class="run.status">{{
           labels[run.status] ?? run.status
         }}</span>
       </summary>
+      <p class="muted small">{{ run.model_name }} · 价格 v{{ run.price_version }} · {{ date(run.created_at) }}<span v-if="run.finished_at"> → {{ date(run.finished_at) }}</span></p>
+      <p>{{ run.instruction }}</p>
       <MarkdownText v-if="run.output" :text="run.output" />
     </details>
     <div v-for="tool in turn.tool_calls" :key="tool.id" class="tool-event">
@@ -75,13 +76,13 @@ async function revoke(grant: Grant) {
           <tr>
             <th>角色</th>
             <th>输入 / 输出 / 缓存</th>
-            <th>USD</th>
+            <th>{{ turn.currency }}</th>
             <th>状态</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="call in turn.calls" :key="call.id">
-            <td>{{ labels[call.role] }}</td>
+            <td>{{ labels[call.agent_name] ?? call.agent_name }}<br /><small>{{ call.model_name }} · v{{ call.price_version }}</small></td>
             <td>
               {{ call.input_tokens ?? "未知" }} /
               {{ call.output_tokens ?? "未知" }} /
