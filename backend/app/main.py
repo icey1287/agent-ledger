@@ -8,10 +8,10 @@ from sqlalchemy import select
 from app import admin, auth, catalog, workspaces
 from app.core.config import Settings
 from app.core.database import create_database, sessions
-from app.entities import Base, Model, Price
+from app.entities import Model, Price
 from app.execution import Runner
 from app.provider import ModelClient
-from app.schema import upgrade_conversations
+from app.schema import initialize_database
 
 
 def seed_model(factory, settings):
@@ -48,9 +48,8 @@ def create_app(settings=None, engine=None, provider=None):
     @asynccontextmanager
     async def lifespan(app):
         actual_engine = engine if engine is not None else create_database(settings)
-        Base.metadata.create_all(actual_engine)
+        initialize_database(actual_engine)
         factory = sessions(actual_engine)
-        upgrade_conversations(actual_engine, factory)
         client = provider if provider is not None else ModelClient(settings)
         app.state.settings, app.state.sessions, app.state.provider = (
             settings,

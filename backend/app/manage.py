@@ -9,7 +9,8 @@ from sqlalchemy import select
 from app.auth import Credentials, passwords
 from app.core.config import Settings
 from app.core.database import create_database, sessions
-from app.entities import Base, User
+from app.entities import User
+from app.schema import initialize_database
 
 
 def main():
@@ -29,7 +30,7 @@ def main():
         raise SystemExit("两次密码不一致")
     data = Credentials(username=args.username, password=password)
     engine = create_database(Settings())
-    Base.metadata.create_all(engine)
+    initialize_database(engine)
     with sessions(engine).begin() as db:
         if db.scalar(select(User).where(User.username == data.username)):
             raise SystemExit("用户名已存在；不会覆盖已有账号或提升其权限")

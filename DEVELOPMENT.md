@@ -65,7 +65,13 @@ API 完整参数及响应结构见运行中的 `/docs`。`GET/POST /api/tasks` �
 
 ## 4. 数据库初始化与迁移
 
-首次启动通过 `Base.metadata.create_all` 建表。已有任务版数据库通过 `schema.upgrade_conversations` 显式增加 `tasks.conversation_id`、外键与索引，再将旧任务分别接入对话，保留全部原记录；重复启动不会重复迁移。迁移遵守数据库 schema 映射，测试不会修改正式数据。后续结构变化继续使用明确迁移，不删除业务数据重建。
+启动统一调用 `initialize_database`：创建缺失表、迁移旧对话结构、执行 `db/migration.sql` 补齐 CHECK 与索引。管理员初始化也走同一路径。可在 backend 目录先单独执行：
+
+```sh
+uv run python -m app.schema
+```
+
+迁移前备份数据库。若历史数据违反约束，迁移和应用启动会报错；先根据约束名核对数据，不自动删除或修正账目。SQL 脚本必须随仓库部署。正常启动与迁移均只支持一个应用进程。
 
 ## 5. 验证
 
@@ -74,3 +80,22 @@ API 完整参数及响应结构见运行中的 `/docs`。`GET/POST /api/tasks` �
 ## 6. 部署配置
 
 本机开发使用 HTTP。公开部署需配置 HTTPS、Secure cookie、可信来源和部署级访问控制。
+
+
+## 7. 可复现数据库回归测试
+
+在 PostgreSQL 17 创建一个专用的空测试数据库（例如 agent_ledger_test），以有建 schema 权限的测试账号设置环境变量；不要使用生产数据库或把密码提交到 Git：
+
+```sh
+# 用你自己的测试连接替换占位符；不要原样运行。
+export TEST_DATABASE_URL='postgresql+psycopg://TEST_USER:TEST_PASSWORD@127.0.0.1:5432/agent_ledger_test'
+cd backend
+uv sync --locked
+uv run python -m pytest -q
+```
+
+未设置 TEST_DATABASE_URL 时数据库测试会明确 skip，不能把 skip 当作验证通过。每项测试创建随机 schema 并在结束时删除它；不会读取 `.env` 中的模型密钥或调用真实供应商。模型只在 HTTP transport 边界替换，API、鉴权、后台执行与 PostgreSQL 事务仍真实运行。
+
+测试包含 SQL/应用两种初始化路径的命名 CHECK 和查询索引比较、重复迁移、旧版无对话表升级、脏数据阻止升级、账目联合约束、事务回滚、历史价格和并发幂等、同对话并发发送、用户隔离、CSRF、缺失用量以及重启恢复。`db/verification.sql` 是现存数据的只读审计，不能代替这些负例和并发测试。
+
+本机可使用 DeepSeek 等 OpenAI 兼容服务：在 `.env` 设置 MODEL_BASE_URL、MODEL_API_KEY、MODEL_NAME 后重启。更换提供商时应停用旧提供商模型，保留历史记录。页面费用仍按配置的演示费率计算，不等于供应商扣费。

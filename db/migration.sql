@@ -25,6 +25,7 @@ BEGIN
             ('agent_runs',       'ck_agent_runs_status',       $expr$status IN ('running', 'completed', 'stopped', 'interrupted')$expr$),
             ('model_calls',      'ck_model_calls_status',      $expr$status IN ('in_flight', 'succeeded', 'failed', 'usage_unknown', 'reconciled')$expr$),
             ('model_calls',      'ck_model_calls_usage_status',$expr$usage_status IN ('unknown', 'known')$expr$),
+            ('model_calls',      'ck_model_calls_usage_complete', $expr$(usage_status = 'unknown' AND cost IS NULL) OR (usage_status = 'known' AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL AND cached_tokens IS NOT NULL AND cost IS NOT NULL)$expr$),
             ('model_calls',      'ck_model_calls_cost',        $expr$cost IS NULL OR cost >= 0$expr$),
             ('model_calls',      'ck_model_calls_input',       $expr$input_tokens IS NULL OR input_tokens >= 0$expr$),
             ('model_calls',      'ck_model_calls_output',      $expr$output_tokens IS NULL OR output_tokens >= 0$expr$),

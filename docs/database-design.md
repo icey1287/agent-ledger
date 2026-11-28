@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | ER 图 | 本文第 2 节 | 11 张实体的关系、基数与外键 |
 | 表结构 | `db/schema.sql`、本文第 3 节 | PostgreSQL 17 DDL、字段、约束、索引 |
-| 样例数据 | `db/sample-data.sql` | 2 用户 / 3 模型 / 4 轮次 / 6 次调用，覆盖完成、超预算、待核实、已停止 |
+| 样例数据 | `db/sample-data.sql` | 3 用户（含管理员） / 3 模型 / 4 轮次 / 6 次调用，覆盖完成、超预算、待核实、已停止 |
 | 业务 SQL | `db/business-queries.sql` | 对话列表、轮次详情、费用汇总、待核实队列等 12 条 |
 | 事务与扣费逻辑 | `db/transactions.sql`、本文第 6 节 | 6 个关键事务、扣费公式、软预算、幂等补录、启动恢复 |
 | 数据库补齐迁移 | `db/migration.sql`、本文第 9 节 | 对 `create_all` 建立的库补齐枚举 CHECK 与复合索引 |
@@ -199,7 +199,7 @@ erDiagram
 ### 3.4 关键约束与设计取舍
 
 - **价格不可变**：没有 `UPDATE model_prices` 的业务路径；改价插入新 `version`，唯一约束防止并发生成重复版本。
-- **费用可空**：`cost IS NULL` 表示用量未知，CHECK 只约束非空费用非负；这样数据库层面就阻止“未知费用被记成 0”。
+- **费用与用量状态联合约束**：`ck_model_calls_usage_complete` 强制 unknown 的费用为 NULL，known 的输入、输出、缓存 token 与费用全部非空；再由非负和缓存子集 CHECK 校验数值。仅有 `cost >= 0` 不能阻止未知费用被记为 0。
 - **缓存 token 是输入子集**：`cached_tokens <= input_tokens` 由 CHECK 保证，计费公式不再重复相加。
 - **金额用 NUMERIC 不用 float**：`Decimal(24,12)` 对应前端十进制字符串，避免累计误差。
 - **不做资金余额表**：业务只记录费用账目；“扣费”是幂等的调用结算，不是账户扣款。
@@ -259,7 +259,7 @@ erDiagram
 
 ### 6.2 六个关键事务
 
-完整可执行 SQL 见 `db/transactions.sql`，这里给出要点：
+参数化事务步骤见 `db/transactions.sql`（分支判断及参数绑定由应用执行，不能直接整文件作为独立事务运行），这里给出要点：
 
 1. **创建一轮**：锁对话 → 检查 `status IN ('pending','running')` 的轮次与 `in_flight` 调用 → 取模型最新价格版本 → 插入 `tasks` / `materials` / `task_tool_grants` → 更新对话标题与 `updated_at` → 提交后才启动后台执行。
 2. **领取执行权**：`SELECT ... FOR UPDATE` 任务，`status = 'pending'` 才置 `running`；重复领取直接返回。
@@ -391,7 +391,7 @@ erDiagram
 1. 备份数据库。
 2. 执行 `db/verification.sql` 的 V1–V9，确认无异常行；存在脏数据时先清洗。
 3. 执行 `db/migration.sql`。DO 块按约束名判重，重复执行不会报错。
-4. 再跑一次 V1–V9 与 `db/sample-data.sql`，确认约束生效且历史数据仍可查询。
+4. 再跑一次 V1–V9，确认约束生效且历史数据仍可查询；`db/sample-data.sql` 只导入独立演示或测试库，不导入已有用户数据的数据库。
 5. 迁移不修改 `model_prices` 任何已有行；改价仍只追加新版本。
 
 Compose 启动与依赖安装见 `DEVELOPMENT.md`，本文不重复运行步骤。
@@ -414,3 +414,23 @@ Compose 启动与依赖安装见 `DEVELOPMENT.md`，本文不重复运行步骤�
 | V10 | 已知费用超过预算的轮次 | 允许有行，对应 BILL-04 |
 
 数据库断言只覆盖 2 号可观测的一致性；业务流程正确性仍由 1 号按 spec 验收标准整体测试与验收，两者衔接处是：V1–V9 通过后，再按 `DEVELOPMENT.md` 第 5 节的验证重点执行端到端流程。
+
+
+## 11. 统一启动与回归验证（2026-11-28）
+
+应用启动及创建管理员都调用 `initialize_database`：创建缺失表、兼容旧对话结构、再执行同一份 `db/migration.sql`。也可先运行 `uv run python -m app.schema`。迁移按事务执行并使用当前 schema 的 advisory lock，发现违反新约束的旧数据时失败，不把未知费用自动改成 0，也不删除旧账。应用仍限定单进程部署。
+
+`schema_translate_map` 对应的测试 schema 同时用于 ORM 和显式 SQL，避免测试操作落入 public。迁移目录必须随应用一起部署。约束与索引的一致性通过 PostgreSQL 系统目录比较；这不声称两种初始化路径所有服务端默认值完全相同。ORM 写入继续提供 Python 默认值。
+
+回归入口及环境见 `DEVELOPMENT.md`。测试覆盖直接非法 SQL、合法零用量、重复初始化、旧结构迁移、脏数据阻断、原子回滚、并发补录、历史价格固定、重复补录不覆盖、并发发消息互斥、用户隔离、CSRF、未知用量和恢复不重发。测试模型通过 HTTP transport 模拟，不消费真实 API。
+
+## 12. 关系设计与理论依据
+
+- `users.id → username, password_hash, role`，username 也是候选键；`models.name` 与主键均可唯一识别模型。
+- `model_prices.id → model_id, version, currency, rates`，`(model_id, version)` 是另一候选键。版本价格单独建表，防止现价更新覆盖任务的历史定价。
+- `task_tool_grants.(task_id, tool) → expires_at, revoked_at`，通过复合唯一约束确保每轮每工具只有一份授权。
+- 用户、模型价格、工具授权在这些已声明依赖下不存在非键属性对候选键的部分或传递依赖；技术主键本身不构成“所有表自动满足 3NF”的证明。
+- `tasks` 对新轮次同时保存 conversation_id 与 user_id，而 conversation_id 决定所属用户，属于有意保留的归属冗余。当前一致性由接口写入和 V6 审计保证，普通单列外键不会阻止跨用户组合；因此不能宣称该冗余完全由数据库约束保护。未来可移除冗余或增加复合归属外键。
+- `model_calls.cost` 是依据历史价格与 token 推导的账目快照。保存结果有利于审计，但与原始用量之间的公式一致性仍由计费函数与测试保证，不能仅靠非负 CHECK 证明。
+- 原子性：一次补录的用量、费用、操作者和任务状态在同一事务提交；失败回滚。并发控制：同一对话创建新轮次先锁对话；补录先锁任务再锁调用；外部 HTTP 期间不持有数据库锁。
+- `NULL` 表达“尚不可确认”，已知零费用是不同事实。汇总必须同时展示已知小计和未知调用数，不能将 `COALESCE(SUM(cost),0)` 单独解释成最终总账。

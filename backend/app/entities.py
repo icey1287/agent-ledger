@@ -166,6 +166,10 @@ class ModelCall(Identity, Base):
         DateTime(timezone=True), nullable=True
     )
     __table_args__ = (
+        CheckConstraint(
+            "(usage_status = 'unknown' AND cost IS NULL) OR (usage_status = 'known' AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL AND cached_tokens IS NOT NULL AND cost IS NOT NULL)",
+            name="ck_model_calls_usage_complete",
+        ),
         CheckConstraint("cost IS NULL OR cost >= 0"),
         CheckConstraint("input_tokens IS NULL OR input_tokens >= 0"),
         CheckConstraint("output_tokens IS NULL OR output_tokens >= 0"),

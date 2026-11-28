@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS model_calls (
         'in_flight', 'succeeded', 'failed', 'usage_unknown', 'reconciled'
     )),
     CONSTRAINT ck_model_calls_usage_status CHECK (usage_status IN ('unknown', 'known')),
+    CONSTRAINT ck_model_calls_usage_complete CHECK ((usage_status = 'unknown' AND cost IS NULL) OR (usage_status = 'known' AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL AND cached_tokens IS NOT NULL AND cost IS NOT NULL)),
     CONSTRAINT ck_model_calls_cost CHECK (cost IS NULL OR cost >= 0),
     CONSTRAINT ck_model_calls_input CHECK (input_tokens IS NULL OR input_tokens >= 0),
     CONSTRAINT ck_model_calls_output CHECK (output_tokens IS NULL OR output_tokens >= 0),
