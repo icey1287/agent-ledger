@@ -12,7 +12,7 @@ SET client_encoding = 'UTF8';
 --       $5=task_id $6=message $7=budget
 --       $8~$11=单条附件(id,name,kind,content)，按附件数循环
 --       $12~$14=单条资料工具授权(id,tool,expires_at)，按选中工具循环
--- v1.2 C2/C3：$2 仅用于锁对话与归属校验，不写入 tasks；
+-- v1.2 C2/C3：$2 写入 tasks.user_id，必须与对话归属一致（trg_tasks_owner 强制）；
 --             未选中的资料工具须补 revoked_at=now() 的显式拒绝行，
 --             delegate_summary / delegate_review 各建一行有效授权。
 -- ===========================================================================
@@ -45,7 +45,7 @@ WHERE model_id = $3
 ORDER BY version DESC
 LIMIT 1;
 
--- 4) 写入轮次；价格版本一旦写入不再改变（user_id 由 conversation_id 推导，不入库）
+-- 4) 写入轮次；user_id 为订阅复合外键所需的冗余值，由 trg_tasks_owner 强制等于对话归属
 INSERT INTO tasks
     (id, conversation_id, price_id, title, instruction, budget)
 VALUES
@@ -105,16 +105,17 @@ JOIN agent_runs r ON r.id = c.run_id
 WHERE r.task_id = $1;
 -- known_cost >= budget → ROLLBACK，任务置 stopped_budget
 
--- v1.2 C1：登记在途调用时即复制本轮默认价格版本的费率快照。
--- 后续即使改价或任务默认价格被调整，本次调用仍按快照结算。
+-- v1.2 C1：登记在途调用时复制该执行的价格版本快照。
+-- 团队扩展后 agent_runs.price_id 可覆盖任务默认价（execution.py:416），以 COALESCE 取实际价。
 INSERT INTO model_calls
     (id, run_id, price_id, currency, input_rate_snapshot, output_rate_snapshot,
      cached_rate_snapshot, rate_unit, status, usage_status)
 SELECT $2, $3, p.id, p.currency, p.input_rate, p.output_rate, p.cached_rate,
        'per_1m_tokens', 'in_flight', 'unknown'
-FROM tasks t
-JOIN model_prices p ON p.id = t.price_id
-WHERE t.id = $1;
+FROM agent_runs r
+JOIN tasks t ON t.id = r.task_id
+JOIN model_prices p ON p.id = COALESCE(r.price_id, t.price_id)
+WHERE r.id = $3 AND t.id = $1;
 
 COMMIT;
 -- 此处才发出模型 HTTP 请求；不持有数据库锁。

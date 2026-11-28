@@ -2,7 +2,7 @@
 -- 固定 ID，便于文档和接口联调引用；ON CONFLICT DO NOTHING 保证可重复执行。
 -- 密码哈希为占位值，不能用于真实登录；真实值由 Argon2id 生成。
 -- 金额单位 USD，精度与 NUMERIC(24,12) 一致；费率单位统一 per_1m_tokens。
--- v1.2 同步点：tasks 无 user_id；model_calls 带费率快照；每个工具调用都有 grant_id。
+-- v1.2 同步点：tasks 保留 user_id（订阅复合外键依赖，由触发器保证与对话一致）；model_calls 带费率快照；每个工具调用都有 grant_id。
 
 SET client_encoding = 'UTF8';
 
@@ -56,19 +56,19 @@ INSERT INTO conversations (id, created_at, user_id, title, updated_at) VALUES
 ('c-bob-1',   '2026-11-23T08:35:00+00:00', 'u-bob',   '待办清单整理', '2026-11-23T08:36:00+00:00')
 ON CONFLICT (id) DO NOTHING;
 
--- v1.2 C2：user_id 已从 tasks 删除，归属由 conversation_id → conversations.user_id 推导
+-- v1.2 C2：user_id 保留（订阅复合外键依赖），值与 conversation.user_id 一致并由触发器强制
 INSERT INTO tasks
-(id, created_at, conversation_id, price_id, title, instruction, budget, status, result, reason, finished_at) VALUES
-('t-alice-1', '2026-11-20T09:01:00+00:00', 'c-alice-1', 'p-minimax-v1',
+(id, created_at, conversation_id, user_id, price_id, title, instruction, budget, status, result, reason, finished_at) VALUES
+('t-alice-1', '2026-11-20T09:01:00+00:00', 'c-alice-1', 'u-alice', 'p-minimax-v1',
  '整理会议纪要', '请把会议纪要整理成项目周报', 0.010000000000, 'completed',
  '本周完成了数据库设计与接口联调，下一步是补充回归测试。', '', '2026-11-20T09:03:00+00:00'),
-('t-alice-2', '2026-11-20T09:10:00+00:00', 'c-alice-1', 'p-minimax-v1',
+('t-alice-2', '2026-11-20T09:10:00+00:00', 'c-alice-1', 'u-alice', 'p-minimax-v1',
  '核对预算表', '读取预算表并列出超额项目', 0.000500000000, 'stopped_budget',
  '', '费用已达到预算，后续调用已停止；最后一次调用可能超额', '2026-11-20T09:11:00+00:00'),
-('t-alice-3', '2026-11-22T14:01:00+00:00', 'c-alice-2', 'p-minimax-v2',
+('t-alice-3', '2026-11-22T14:01:00+00:00', 'c-alice-2', 'u-alice', 'p-minimax-v2',
  '核对合同条款', '检查合同中的交付与违约条款', 0.010000000000, 'awaiting_usage',
  '', '模型连接中断或超时，用量待核实', '2026-11-22T14:02:00+00:00'),
-('t-bob-1', '2026-11-23T08:35:00+00:00', 'c-bob-1', 'p-minimax-v1',
+('t-bob-1', '2026-11-23T08:35:00+00:00', 'c-bob-1', 'u-bob', 'p-minimax-v1',
  '整理待办', '把待办清单按优先级排序', 0.010000000000, 'cancelled',
  '', '用户停止任务；已发出的模型调用仍会记录用量', '2026-11-23T08:36:00+00:00')
 ON CONFLICT (id) DO NOTHING;

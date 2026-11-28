@@ -1,8 +1,8 @@
 -- Agent Desk 数据库验收自查 SQL（2 号：数据库设计与实现）· v1.2
--- V1~V9、V11~V15 为一致性断言：均应返回 0 行；
+-- V1~V9、V11~V16 为一致性断言：均应返回 0 行；
 -- V10 为软预算观察查询，返回行属正常业务现象。
 -- v1.2 新增：V11 快照完整性 / V12 快照与价格版本一致 / V13 授权归属 /
---            V14 工具与授权类型匹配 / V15 按快照复算费用。
+--            V14 工具与授权类型匹配 / V15 按快照复算费用 / V16 归属触发器在线。
 -- 与 docs/database-design.md 第 8 节、第 10 节、第 11 节配套使用。
 
 SET client_encoding = 'UTF8';
@@ -56,13 +56,17 @@ FROM model_prices p
 LEFT JOIN models m ON m.id = p.model_id
 WHERE m.id IS NULL;
 
--- V6 v1.2 C2：tasks.user_id 已删除，归属只从 conversations 推导；
---    本断言改为「任务必须归属存在的用户」，并重查无对话的旧任务。
+-- V6 任务与对话必须同属一个用户；v1.2 起由 trg_tasks_owner 在写入时强制
+SELECT t.id
+FROM tasks t
+JOIN conversations c ON c.id = t.conversation_id
+WHERE t.user_id <> c.user_id;
+
+-- V6b 迁移前不应残留无对话归属的任务
 SELECT t.id
 FROM tasks t
 LEFT JOIN conversations c ON c.id = t.conversation_id
-LEFT JOIN users u ON u.id = c.user_id
-WHERE c.id IS NULL OR u.id IS NULL;
+WHERE c.id IS NULL;
 
 -- V7 无孤立记录
 SELECT 'agent_runs' AS tbl, id FROM agent_runs
@@ -154,3 +158,18 @@ WHERE c.usage_status = 'known'
        + c.cached_tokens * COALESCE(c.cached_rate_snapshot, 0)
        + c.output_tokens * c.output_rate_snapshot) / 1000000
   );
+
+-- V16 v1.2 C2：归属不变量触发器必须存在且启用（订阅复合外键依赖 tasks.user_id）
+SELECT 'missing_or_disabled_trigger' AS issue
+WHERE NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'tasks'::regclass
+      AND tgname = 'trg_tasks_owner'
+      AND NOT tgisinternal
+      AND tgenabled = 'O'
+)
+UNION ALL
+SELECT 'missing_trigger_function'
+WHERE NOT EXISTS (
+    SELECT 1 FROM pg_proc WHERE proname = 'enforce_task_owner'
+);
