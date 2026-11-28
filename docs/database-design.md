@@ -5,7 +5,7 @@
 | 交付项 | 文件 | 内容 |
 | --- | --- | --- |
 | ER 图 | 本文第 2 节 | 13 张实体的关系、基数与外键；v1.2 快照与必填授权 |
-| ER 图预览 / 图片 | `docs/er-diagram.html`、`docs/er-diagram.png` | 概览 / 完整 / 跨模块三视图 |
+| ER 图（唯一） | `docs/er-diagram.html`（交互预览）、`docs/er-diagram.png`（静态图片） | 同一份 v1.2 三视图：概览 / 完整 / 跨模块。旧版对照图已移除，不再保留第二份 ER 图 |
 | 表结构 | `db/schema.sql`、本文第 3 节 | PostgreSQL 17 DDL、字段、约束、索引 |
 | 样例数据 | `db/sample-data.sql` | 3 用户（含管理员） / 3 模型 / 4 轮次 / 6 次调用，覆盖完成、超预算、待核实、已停止 |
 | 业务 SQL | `db/business-queries.sql` | 对话列表、轮次详情、费用汇总、待核实队列等 12 条 |
@@ -500,7 +500,7 @@ Compose 启动与依赖安装见 `DEVELOPMENT.md`，本文不重复运行步骤�
 
 agents 由 id 决定 owner/model/name/instruction/enabled；task_agents 有候选键 id、(task_id,agent_id)、(task_id,position)。快照 name/instruction 描述当次接纳配置，不依赖可变的当前 Agent 属性，因此保留历史而非同步冗余。task_agents.price_id 固定接纳价格，agent_runs.price_id 支持内置和自建角色统一记账；自建成员运行时复制快照价格，属于受应用维护的一致性冗余。数据库 FK 保证引用存在，快照不可编辑、快照与任务归属和价格相同由受控应用路径保证，不声称由数据库完全强制。
 
-正式 ER 图需补充上述两个实体、价格到执行的关系和可选基数。已有 13 表图与 v2 报告是升级前版本，不能作为当前结构完整图。迁移和新旧路径一致性由回归测试验证。
+当前唯一的正式 ER 图是 `docs/er-diagram.html` / `.png`：13 个核心实体 + 18 条关系，已含 v1.2 的调用级费率快照与必填授权，并附跨模块对账视图。`agents` 与 `task_agents` 两个团队配置实体未画入该图，其关系按本节文字与 `db/schema.sql` 为准（见第 14 节决策记录）。旧版 13 表图及对照图片已从仓库移除，不再作为可引用资料。迁移和新旧路径一致性由回归测试验证。
 
 ## 14. v1.2 Schema 变更决策记录
 

@@ -4,7 +4,7 @@ MDS5120 AI Agent Subscription and Task Billing Database System：套餐订阅、
 
 - 启动、数据库迁移和测试：[DEVELOPMENT.md](DEVELOPMENT.md)
 - 系统架构：[ARCHITECTURE.md](ARCHITECTURE.md)
-- ER 图、关系模型、事务及设计讨论：[docs/database-design.md](docs/database-design.md)
+- ER 图（唯一版本）：[交互预览](docs/er-diagram.html) · [静态图片](docs/er-diagram.png)；关系模型、事务及设计讨论：[docs/database-design.md](docs/database-design.md)
 - 行为约定：[spec](spec/)
 - 建表、样例、业务查询和审计：[db](db/)
 - PostgreSQL 集成与回归测试：[backend/tests](backend/tests/)
