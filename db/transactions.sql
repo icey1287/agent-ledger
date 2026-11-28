@@ -1,4 +1,5 @@
--- Agent Desk 关键事务与扣费逻辑（2 号：数据库设计与实现）
+-- Agent Desk 关键事务与扣费逻辑（2 号：数据库设计与实现）· v1.2
+-- 同步三项变更：C1 调用快照费率 / C2 tasks 无 user_id / C3 grant_id 必填。
 -- 统一加锁顺序：对话行 / 任务行 → 授权行 / 调用行。
 -- 任何数据库锁都不跨外部模型 HTTP 请求：请求前短事务登记 in_flight，响应后另开事务结算。
 -- 应用侧在某一步校验失败时应 ROLLBACK 并返回对应业务错误，不要继续执行。
@@ -10,7 +11,10 @@ SET client_encoding = 'UTF8';
 -- 参数：$1=conversation_id $2=user_id $3=model_id $4=price_id(由最新版本查得)
 --       $5=task_id $6=message $7=budget
 --       $8~$11=单条附件(id,name,kind,content)，按附件数循环
---       $12~$14=单条授权(id,tool,expires_at)，按工具数循环
+--       $12~$14=单条资料工具授权(id,tool,expires_at)，按选中工具循环
+-- v1.2 C2/C3：$2 仅用于锁对话与归属校验，不写入 tasks；
+--             未选中的资料工具须补 revoked_at=now() 的显式拒绝行，
+--             delegate_summary / delegate_review 各建一行有效授权。
 -- ===========================================================================
 BEGIN;
 
@@ -19,9 +23,10 @@ SELECT id FROM conversations WHERE id = $1 AND user_id = $2 FOR UPDATE;
 -- 无行 → ROLLBACK，返回 404
 
 -- 2) 互斥：活跃轮次或在途调用任一存在即拒绝
-SELECT 1 FROM tasks
-WHERE conversation_id = $1 AND user_id = $2
-  AND status IN ('pending', 'running')
+SELECT 1 FROM tasks t
+JOIN conversations c ON c.id = t.conversation_id
+WHERE t.conversation_id = $1 AND c.user_id = $2
+  AND t.status IN ('pending', 'running')
 LIMIT 1;
 -- 有行 → ROLLBACK，返回 409“上一条回复仍在执行或结算”
 
@@ -29,7 +34,8 @@ SELECT 1
 FROM model_calls c
 JOIN agent_runs r ON r.id = c.run_id
 JOIN tasks t ON t.id = r.task_id
-WHERE t.conversation_id = $1 AND t.user_id = $2 AND c.status = 'in_flight'
+JOIN conversations c2 ON c2.id = t.conversation_id
+WHERE t.conversation_id = $1 AND c2.user_id = $2 AND c.status = 'in_flight'
 LIMIT 1;
 -- 有行 → ROLLBACK，返回 409
 
@@ -39,11 +45,11 @@ WHERE model_id = $3
 ORDER BY version DESC
 LIMIT 1;
 
--- 4) 写入轮次；价格版本一旦写入不再改变
+-- 4) 写入轮次；价格版本一旦写入不再改变（user_id 由 conversation_id 推导，不入库）
 INSERT INTO tasks
-    (id, conversation_id, user_id, price_id, title, instruction, budget)
+    (id, conversation_id, price_id, title, instruction, budget)
 VALUES
-    ($5, $1, $2, $4, left($6, 60), $6, $7::numeric);
+    ($5, $1, $4, left($6, 60), $6, $7::numeric);
 
 -- 5) 每个附件一行（应用循环绑定）
 INSERT INTO materials (id, task_id, name, kind, content)
@@ -99,8 +105,16 @@ JOIN agent_runs r ON r.id = c.run_id
 WHERE r.task_id = $1;
 -- known_cost >= budget → ROLLBACK，任务置 stopped_budget
 
-INSERT INTO model_calls (id, run_id, status, usage_status)
-VALUES ($2, $3, 'in_flight', 'unknown');
+-- v1.2 C1：登记在途调用时即复制本轮默认价格版本的费率快照。
+-- 后续即使改价或任务默认价格被调整，本次调用仍按快照结算。
+INSERT INTO model_calls
+    (id, run_id, price_id, currency, input_rate_snapshot, output_rate_snapshot,
+     cached_rate_snapshot, rate_unit, status, usage_status)
+SELECT $2, $3, p.id, p.currency, p.input_rate, p.output_rate, p.cached_rate,
+       'per_1m_tokens', 'in_flight', 'unknown'
+FROM tasks t
+JOIN model_prices p ON p.id = t.price_id
+WHERE t.id = $1;
 
 COMMIT;
 -- 此处才发出模型 HTTP 请求；不持有数据库锁。
@@ -111,7 +125,8 @@ COMMIT;
 --       $5=input_tokens $6=output_tokens $7=cached_tokens $8=cost
 --       $9=raw_usage(json) $10=provider_request_id $11=response_text
 -- 费用计算：((输入-缓存)*输入单价 + 缓存*缓存单价 + 输出*输出单价)/1000000
--- 单价来自任务固定的 model_prices 版本，由 billing.calculate 用 Decimal 完成。
+-- 单价来自本调用的 model_calls 费率快照（v1.2 C1），由 billing.calculate 用 Decimal 完成；
+-- 不读取 model_prices 当前值，也不读取 tasks.price_id。
 -- ===========================================================================
 BEGIN;
 
@@ -165,7 +180,8 @@ COMMIT;
 -- ===========================================================================
 -- T5 工具执行：锁任务 → 锁授权，每次读取都有明确的授权判断时点
 -- 参数：$1=task_id $2=tool $3=run_id $4=tool_call_id
---       $5=arguments(json) $6=status $7=output $8=grant_id(可为 NULL)
+--       $5=arguments(json) $6=status $7=output $8=grant_id(必填)
+-- v1.2 C3：资料工具未获授权时 $8 指向显式拒绝行；委派工具指向预定义角色授权行。
 -- ===========================================================================
 BEGIN;
 
@@ -176,8 +192,8 @@ SELECT id, expires_at, revoked_at
 FROM task_tool_grants
 WHERE task_id = $1 AND tool = $2
 FOR UPDATE;
--- 无行、revoked_at 非空、expires_at <= now() 任一成立 → $6='denied'
--- 资料范围：JOIN tasks 限定 conversation_id 相同、user_id 相同且 created_at <= 当前轮
+-- 授权行在任务创建时已为四种工具各建一行；撤销或到期 → $6='denied'，仍写 grant_id
+-- 资料范围：JOIN tasks → conversations 限定 conversation_id 相同、user_id 相同且 created_at <= 当前轮
 
 INSERT INTO tool_calls (id, run_id, grant_id, tool, arguments, status, output)
 VALUES ($4, $3, $8, $2, $5::json, $6, $7);
@@ -188,7 +204,7 @@ COMMIT;
 -- ===========================================================================
 -- T6 管理员补录：锁任务 → 锁调用；以 usage_status 做幂等标记
 -- 参数：$1=call_id $2=input_tokens $3=output_tokens $4=cached_tokens
---       $5=cost(按原价格版本用 Decimal 计算) $6=admin_user_id $7=evidence
+--       $5=cost(按调用自身费率快照用 Decimal 计算) $6=admin_user_id $7=evidence
 -- ===========================================================================
 BEGIN;
 
@@ -205,11 +221,11 @@ SELECT * FROM model_calls WHERE id = $1 FOR UPDATE;
 -- usage_status = 'known' → COMMIT，返回原 cost，already_reconciled = true（不重复计费）
 -- status <> 'usage_unknown' → ROLLBACK，409“调用仍在进行，不能补录”
 
--- 费率必须来自任务固定版本，不能用当前最新价格
-SELECT p.input_rate, p.output_rate, p.cached_rate
-FROM tasks t
-JOIN model_prices p ON p.id = t.price_id
-WHERE t.id = $8;
+-- v1.2 C1：费率必须来自该调用的快照，不能用当前最新价格或任务默认价格
+SELECT c.currency, c.input_rate_snapshot, c.output_rate_snapshot,
+       c.cached_rate_snapshot, c.rate_unit
+FROM model_calls c
+WHERE c.id = $1;
 
 UPDATE model_calls
 SET input_tokens = $2,

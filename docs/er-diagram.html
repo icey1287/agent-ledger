@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Desk ER diagram — views</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<style>
+:root{--bg:#f5f7fb;--paper:#fff;--ink:#0f172a;--muted:#64748b;--line:#e2e8f0}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"Segoe UI",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+.page{width:100%;padding:28px 36px 36px}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:28px;margin-bottom:18px}
+.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+h1{margin:6px 0 0;font-size:24px;font-weight:600;letter-spacing:-.02em}
+.sub{margin:7px 0 0;font-size:13px;color:var(--muted);line-height:1.65;max-width:880px}
+.stats{display:flex;gap:8px;flex:none}
+.stat{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:9px 13px;min-width:82px}
+.stat b{display:block;font-size:18px;font-weight:600;line-height:1.2}
+.stat span{display:block;margin-top:2px;font-size:11px;color:var(--muted)}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:22px 26px 18px;margin-bottom:18px;box-shadow:0 12px 30px rgba(15,23,42,.05);overflow:auto}
+.card h2{margin:0 0 4px;font-size:15px;font-weight:600}
+.card .hint{margin:0 0 16px;font-size:12px;color:var(--muted);line-height:1.6}
+.legend{display:flex;flex-wrap:wrap;gap:9px 16px;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--line)}
+.legend-item{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;flex:none}
+.d1{background:#4f46e5}.d2{background:#7c3aed}.d3{background:#0d9488}.d4{background:#d97706}.d5{background:#e11d48}
+.dash{width:18px;border-top:2px dashed #0f766e;display:inline-block;flex:none;vertical-align:middle}
+.key-chip{font-size:11px;font-weight:800;padding:1px 5px;border-radius:4px;background:#fee2e2;color:#b91c1c}
+.key-chip.blue{background:#dbeafe;color:#1d4ed8}
+.cardinality{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:#334155;background:#f1f5f9;border-radius:4px;padding:1px 5px}
+.mermaid{min-width:1200px}
+.mermaid.compact{min-width:900px}
+.mermaid.tiny{min-width:430px}
+.notes{background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:20px 26px}
+.notes h2{margin:0 0 10px;font-size:15px;font-weight:600}
+.notes .meta{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+.notes ul{margin:0;padding-left:18px;font-size:12px;color:#334155;line-height:1.75}
+.notes li{margin-bottom:3px}
+.notes b{color:var(--ink);font-weight:600}
+.mermaid svg .relationshipLine{stroke:#334155!important;stroke-width:1.8px!important}
+.mermaid svg .marker{stroke:#334155!important;fill:none!important}
+.mermaid svg .marker path,.mermaid svg .marker circle,.mermaid svg .marker polygon{stroke:#334155!important;stroke-width:2!important}
+.mermaid svg .attribute-name .nodeLabel p{color:#0f172a!important;font-weight:600!important;font-size:13px!important}
+.mermaid svg .attribute-type .nodeLabel p{color:#334155!important;font-size:12px!important}
+.mermaid svg .name .nodeLabel p{color:#172554!important;font-weight:700!important;font-size:14px!important}
+.mermaid svg .edgeLabel .label text{fill:#0f172a!important;font-weight:600!important;font-size:13px!important}
+.mermaid svg span.edgeLabel p{color:#0f172a!important;font-weight:600!important;font-size:13px!important}
+.mermaid svg .labelBkg{background:#ffffff!important}
+.mermaid svg .relationshipLabelBox{opacity:1!important;fill:#ffffff!important}
+.mermaid svg .edgeLabel .label rect{fill:#ffffff!important;opacity:1!important}
+</style>
+</head>
+<body>
+<div class="page">
+<header>
+<div>
+<div class="eyebrow">Database design · v1.2</div>
+<h1>Agent Desk ER diagram</h1>
+<p class="sub">Four layers, five entity groups. Overview for structure, full detail for field lookup, and a dedicated view for the single cross-module reconciliation path. v1.2 adds per-call rate snapshots, removes TASKS.user_id, and makes tool grants mandatory.</p>
+</div>
+<div class="stats">
+<div class="stat"><b>11</b><span>entities</span></div>
+<div class="stat"><b>14</b><span>relations</span></div>
+<div class="stat"><b>4</b><span>layers</span></div>
+<div class="stat"><b>5</b><span>groups</span></div>
+</div>
+</header>
+
+<div class="legend">
+<span class="legend-item"><i class="dot d1"></i>L1a Identity &amp; sessions</span>
+<span class="legend-item"><i class="dot d2"></i>L1b Catalog &amp; pricing</span>
+<span class="legend-item"><i class="dot d3"></i>L2 Conversation &amp; tasks</span>
+<span class="legend-item"><i class="dot d4"></i>L3 Resources &amp; grants</span>
+<span class="legend-item"><i class="dot d5"></i>L4 Execution &amp; billing</span>
+<span class="legend-item"><i class="dash"></i>Cross-module reconciliation</span>
+<span class="legend-item"><span class="key-chip">PK</span> primary key</span>
+<span class="legend-item"><span class="key-chip blue">FK</span> foreign key / UK unique</span>
+<span class="legend-item"><span class="cardinality">||</span> exactly one</span>
+<span class="legend-item"><span class="cardinality">o{</span> zero or more</span>
+<span class="legend-item"><span class="cardinality">|o</span> zero or one</span>
+<span class="legend-item"><span class="cardinality">|{</span> one or more</span>
+</div>
+<section class="card">
+<h2>Overview</h2>
+<p class="hint">Entities, key fields and relationships only. The reconciliation path is shown separately below to keep the main flow clear.</p>
+<pre class="mermaid compact">erDiagram
+    direction LR
+
+    USERS ||--o{ SESSIONS : "starts session"
+    USERS ||--o{ CONVERSATIONS : "owns"
+    CONVERSATIONS ||--o{ TASKS : "contains tasks"
+    MODELS ||--o{ MODEL_PRICES : "price versions"
+    MODEL_PRICES ||--o{ TASKS : "locks default price"
+    MODEL_PRICES ||--o{ MODEL_CALLS : "prices each call"
+    TASKS ||--o{ MATERIALS : "uploads materials"
+    TASKS ||--o{ TASK_TOOL_GRANTS : "grants tools"
+    TASKS ||--o{ AGENT_RUNS : "runs"
+    AGENT_RUNS |o--o{ AGENT_RUNS : "delegates sub-role"
+    AGENT_RUNS ||--o{ MODEL_CALLS : "model calls"
+    AGENT_RUNS ||--o{ TOOL_CALLS : "tool calls"
+    TASK_TOOL_GRANTS ||--o{ TOOL_CALLS : "authorization basis"
+
+    USERS {
+        string id PK
+        string username UK
+    }
+    SESSIONS {
+        string id PK
+        string user_id FK
+        string token_hash UK
+    }
+    MODELS {
+        string id PK
+        string name UK
+    }
+    MODEL_PRICES {
+        string id PK
+        string model_id FK
+    }
+    CONVERSATIONS {
+        string id PK
+        string user_id FK
+    }
+    TASKS {
+        string id PK
+        string conversation_id FK
+        string price_id FK
+    }
+    MATERIALS {
+        string id PK
+        string task_id FK
+    }
+    TASK_TOOL_GRANTS {
+        string id PK
+        string task_id FK
+    }
+    AGENT_RUNS {
+        string id PK
+        string task_id FK
+        string parent_id FK
+    }
+    MODEL_CALLS {
+        string id PK
+        string run_id FK
+        string price_id FK
+        string reconciled_by FK
+    }
+    TOOL_CALLS {
+        string id PK
+        string run_id FK
+        string grant_id FK
+    }</pre>
+</section>
+<section class="card">
+<h2>Full detail</h2>
+<p class="hint">All attributes, including the v1.2 rate snapshot on MODEL_CALLS. Same entities, keys and cardinalities as the overview.</p>
+<pre class="mermaid">erDiagram
+    direction LR
+
+    USERS ||--o{ SESSIONS : "starts session"
+    USERS ||--o{ CONVERSATIONS : "owns"
+    CONVERSATIONS ||--o{ TASKS : "contains tasks"
+    MODELS ||--o{ MODEL_PRICES : "price versions"
+    MODEL_PRICES ||--o{ TASKS : "locks default price"
+    MODEL_PRICES ||--o{ MODEL_CALLS : "prices each call"
+    TASKS ||--o{ MATERIALS : "uploads materials"
+    TASKS ||--o{ TASK_TOOL_GRANTS : "grants tools"
+    TASKS ||--o{ AGENT_RUNS : "runs"
+    AGENT_RUNS |o--o{ AGENT_RUNS : "delegates sub-role"
+    AGENT_RUNS ||--o{ MODEL_CALLS : "model calls"
+    AGENT_RUNS ||--o{ TOOL_CALLS : "tool calls"
+    TASK_TOOL_GRANTS ||--o{ TOOL_CALLS : "authorization basis"
+
+    USERS {
+        string id PK
+        string username UK
+        string password_hash
+        string role
+    }
+    SESSIONS {
+        string id PK
+        string user_id FK
+        string token_hash UK
+        string csrf_token
+        timestamp expires_at
+    }
+    MODELS {
+        string id PK
+        string name UK
+        string display_name
+        boolean enabled
+    }
+    MODEL_PRICES {
+        string id PK
+        string model_id FK
+        int version
+        string currency
+        decimal input_rate
+        decimal output_rate
+        decimal cached_rate
+    }
+    CONVERSATIONS {
+        string id PK
+        string user_id FK
+        string title
+        timestamp updated_at
+    }
+    TASKS {
+        string id PK
+        string conversation_id FK
+        string price_id FK
+        text instruction
+        decimal budget
+        string status
+        text result
+    }
+    MATERIALS {
+        string id PK
+        string task_id FK
+        string name
+        string kind
+        text content
+    }
+    TASK_TOOL_GRANTS {
+        string id PK
+        string task_id FK
+        string tool
+        timestamp expires_at
+        timestamp revoked_at
+    }
+    AGENT_RUNS {
+        string id PK
+        string task_id FK
+        string parent_id FK
+        string role
+        string status
+        text output
+    }
+    MODEL_CALLS {
+        string id PK
+        string run_id FK
+        string price_id FK
+        string currency
+        decimal input_rate_snapshot
+        decimal output_rate_snapshot
+        decimal cached_rate_snapshot
+        string rate_unit
+        string status
+        string usage_status
+        int input_tokens
+        int output_tokens
+        int cached_tokens
+        decimal cost
+        json raw_usage
+        string reconciled_by FK
+    }
+    TOOL_CALLS {
+        string id PK
+        string run_id FK
+        string grant_id FK
+        string tool
+        json arguments
+        string status
+    }</pre>
+</section>
+<section class="card">
+<h2>Cross-module reconciliation</h2>
+<p class="hint">USERS |o--o{ MODEL_CALLS: an administrator verifies usage whose token counts were unknown at call time. The bill is recalculated from the call's own rate snapshot.</p>
+<pre class="mermaid tiny">erDiagram
+    USERS |o--o{ MODEL_CALLS : "reconciles"
+    USERS {
+        string id PK
+        string role
+    }
+    MODEL_CALLS {
+        string id PK
+        string run_id FK
+        string price_id FK
+        string currency
+        decimal input_rate_snapshot
+        decimal output_rate_snapshot
+        decimal cached_rate_snapshot
+        string rate_unit
+        string reconciled_by FK
+        string usage_status
+        decimal cost
+    }</pre>
+</section>
+
+<div class="notes">
+<div class="meta">Decision record · v1.2 · 2026-11-28</div>
+<h2>Resolved design decisions</h2>
+<ul>
+<li><b>Pricing scope:</b> TASKS.price_id remains the per-turn default (spec EXEC-02, one model per turn). Every MODEL_CALLS row now stores its own price_id and rate snapshot, so historical bills no longer depend on the price catalog.</li>
+<li><b>Rate unit:</b> per_1m_tokens, matching billing.py's division by 1,000,000. Cached tokens are a subset of input tokens and are never double-charged. Cost uses Decimal calculation and NUMERIC(24,12) storage; budget currency is USD, matching the selected price version.</li>
+<li><b>User ownership:</b> TASKS.user_id removed. Ownership is derived from CONVERSATIONS.user_id only, so a task cannot belong to a different user than its conversation.</li>
+<li><b>Tool grants:</b> grant_id is mandatory for every tool call. Unselected material tools are recorded as explicit denials; delegated role tools carry a predefined EXEC-01 grant and are not exposed to the user grant API.</li>
+<li><b>Grant scope:</b> sub-agents inherit the turn's task-level grants; run-level grants were not adopted because spec MAT-04 defines grants at turn+tool scope.</li>
+<li><b>Not adopted / unverified:</b> URI + checksum for large MATERIALS.content (no requirement found in spec); argument masking and retention for TOOL_CALLS.arguments (no rule found in spec or code - needs security owner).</li>
+</ul>
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+mermaid.initialize({
+  startOnLoad:false,
+  theme:"base",
+  securityLevel:"loose",
+  themeVariables:{
+    fontFamily:'Inter, "Segoe UI", system-ui, sans-serif',
+    fontSize:'13px',
+    primaryColor:'#eef2ff',
+    primaryBorderColor:'#818cf8',
+    primaryTextColor:'#1e1b4b',
+    lineColor:'#94a3b8',
+    secondaryColor:'#f8fafc',
+    tertiaryColor:'#ffffff',
+    entityBoxBkgd:'#eef2ff',
+    entityBoxBorder:'#818cf8',
+    entityBoxTextColor:'#1e1b4b',
+    attributeBoxOddRowBackground:'#ffffff',
+    attributeBoxEvenRowBackground:'#f8fafc',
+    attributeBoxTextColor:'#334155',
+    relationshipLineColor:'#94a3b8',
+    relationshipLabelBackground:'#ffffff',
+    relationshipLabelTextColor:'#475569'
+  },
+  er:{layoutDirection:"LR",nodeSpacing:72,rankSpacing:150,diagramPadding:32,useMaxWidth:false}
+});
+mermaid.run({querySelector:".mermaid"}).then(function(){
+  document.querySelectorAll('.mermaid svg .attribute-keys p').forEach(function(p){
+    var key=p.textContent.trim();
+    p.style.color=key==='PK'?'#b91c1c':'#1d4ed8';
+    p.style.fontWeight='800';
+    p.style.fontSize='13px';
+    p.style.letterSpacing='.02em';
+  });
+  document.querySelectorAll('.mermaid svg marker').forEach(function(m){
+    var w=parseFloat(m.getAttribute('markerWidth'))||57;
+    var h=parseFloat(m.getAttribute('markerHeight'))||36;
+    m.setAttribute('markerWidth',String(w*1.12));
+    m.setAttribute('markerHeight',String(h*1.12));
+  });
+});
+</script>
+</body>
+</html>

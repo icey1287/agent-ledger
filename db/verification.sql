@@ -1,6 +1,9 @@
--- Agent Desk 数据库验收自查 SQL（2 号：数据库设计与实现）
--- V1~V9 为一致性断言：均应返回 0 行；V10 为软预算观察查询，返回行属正常业务现象。
--- 与 docs/database-design.md 第 8 节、第 10 节配套使用。
+-- Agent Desk 数据库验收自查 SQL（2 号：数据库设计与实现）· v1.2
+-- V1~V9、V11~V15 为一致性断言：均应返回 0 行；
+-- V10 为软预算观察查询，返回行属正常业务现象。
+-- v1.2 新增：V11 快照完整性 / V12 快照与价格版本一致 / V13 授权归属 /
+--            V14 工具与授权类型匹配 / V15 按快照复算费用。
+-- 与 docs/database-design.md 第 8 节、第 10 节、第 11 节配套使用。
 
 SET client_encoding = 'UTF8';
 
@@ -53,11 +56,13 @@ FROM model_prices p
 LEFT JOIN models m ON m.id = p.model_id
 WHERE m.id IS NULL;
 
--- V6 任务与对话必须同属一个用户（数据隔离的数据库层断言）
+-- V6 v1.2 C2：tasks.user_id 已删除，归属只从 conversations 推导；
+--    本断言改为「任务必须归属存在的用户」，并重查无对话的旧任务。
 SELECT t.id
 FROM tasks t
-JOIN conversations c ON c.id = t.conversation_id
-WHERE t.user_id <> c.user_id;
+LEFT JOIN conversations c ON c.id = t.conversation_id
+LEFT JOIN users u ON u.id = c.user_id
+WHERE c.id IS NULL OR u.id IS NULL;
 
 -- V7 无孤立记录
 SELECT 'agent_runs' AS tbl, id FROM agent_runs
@@ -96,3 +101,56 @@ LEFT JOIN model_calls c ON c.run_id = r.id
 GROUP BY t.id, t.budget, t.status
 HAVING COALESCE(SUM(c.cost), 0) > t.budget
 ORDER BY known_cost DESC;
+
+-- ---------------------------------------------------------------------------
+-- v1.2 新增断言（均应为 0 行）
+-- ---------------------------------------------------------------------------
+
+-- V11 每次调用的费率快照必须完整且单位正确（C1）
+SELECT id
+FROM model_calls
+WHERE price_id IS NULL OR currency IS NULL
+   OR input_rate_snapshot IS NULL OR output_rate_snapshot IS NULL
+   OR rate_unit IS NULL OR rate_unit <> 'per_1m_tokens'
+   OR currency !~ '^[A-Z]{3}$';
+
+-- V12 快照必须与所引用的历史价格版本一致；有行说明历史费率被改写，账单失去依据（C1）
+SELECT c.id
+FROM model_calls c
+JOIN model_prices p ON p.id = c.price_id
+WHERE c.currency <> p.currency
+   OR c.input_rate_snapshot <> p.input_rate
+   OR c.output_rate_snapshot <> p.output_rate
+   OR c.cached_rate_snapshot IS DISTINCT FROM p.cached_rate;
+
+-- V13 工具调用必须有授权行，且授权属于同一轮次（C3）
+SELECT tc.id
+FROM tool_calls tc
+LEFT JOIN task_tool_grants g ON g.id = tc.grant_id
+LEFT JOIN agent_runs r ON r.id = tc.run_id
+LEFT JOIN tasks t ON t.id = r.task_id
+WHERE g.id IS NULL OR g.task_id IS DISTINCT FROM t.id;
+
+-- V14 授权类型必须与工具类型匹配：委派工具不能挂资料授权，反之亦然（C3）
+SELECT tc.id
+FROM tool_calls tc
+JOIN task_tool_grants g ON g.id = tc.grant_id
+WHERE (tc.tool IN ('read_material', 'search_materials')
+       AND g.tool NOT IN ('read_material', 'search_materials'))
+   OR (tc.tool IN ('delegate_summary', 'delegate_review')
+       AND g.tool NOT IN ('delegate_summary', 'delegate_review'));
+
+-- V15 已知费用必须等于按本次快照费率复算的结果（C1，容差 1e-12）
+SELECT c.id
+FROM model_calls c
+WHERE c.usage_status = 'known'
+  AND c.cost IS NOT NULL
+  AND c.input_tokens IS NOT NULL
+  AND c.output_tokens IS NOT NULL
+  AND c.cached_tokens IS NOT NULL
+  AND (c.cached_rate_snapshot IS NOT NULL OR c.cached_tokens = 0)
+  AND c.cost <> (
+      ((c.input_tokens - c.cached_tokens) * c.input_rate_snapshot
+       + c.cached_tokens * COALESCE(c.cached_rate_snapshot, 0)
+       + c.output_tokens * c.output_rate_snapshot) / 1000000
+  );

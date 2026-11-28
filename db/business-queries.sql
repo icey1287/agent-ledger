@@ -1,5 +1,7 @@
--- Agent Desk 常用业务 SQL（2 号：数据库设计与实现）
+-- Agent Desk 常用业务 SQL（2 号：数据库设计与实现）· v1.2
 -- 参数用 $1 / $2 ... 占位，由应用绑定；所有用户态查询都带 user_id 过滤。
+-- v1.2 C2：tasks 已无 user_id，归属统一通过 JOIN conversations 过滤。
+-- v1.2 C1：Q4/Q8/Q10 展示 model_calls 的费率快照，不回连当前价格版本。
 -- 金额输出为 NUMERIC，应用侧转十进制字符串给前端。
 
 SET client_encoding = 'UTF8';
@@ -23,9 +25,10 @@ SELECT
     COALESCE(SUM(c.cost), 0) AS known_cost,
     COUNT(*) FILTER (WHERE c.usage_status = 'unknown') AS unknown_calls
 FROM tasks t
+JOIN conversations c2 ON c2.id = t.conversation_id
 LEFT JOIN agent_runs r ON r.task_id = t.id
 LEFT JOIN model_calls c ON c.run_id = r.id
-WHERE t.conversation_id = $1 AND t.user_id = $2
+WHERE t.conversation_id = $1 AND c2.user_id = $2
 GROUP BY t.id
 ORDER BY t.created_at, t.id;
 
@@ -43,8 +46,9 @@ SELECT
     r.finished_at
 FROM agent_runs r
 JOIN tasks t ON t.id = r.task_id
+JOIN conversations c2 ON c2.id = t.conversation_id
 LEFT JOIN agent_runs p ON p.id = r.parent_id
-WHERE r.task_id = $1 AND t.user_id = $2
+WHERE r.task_id = $1 AND c2.user_id = $2
 ORDER BY r.created_at, r.id;
 
 -- Q4 单轮调用账目：逐次 token、费用、错误与补录依据
@@ -58,6 +62,11 @@ SELECT
     c.output_tokens,
     c.cached_tokens,
     c.cost,
+    c.currency,
+    c.input_rate_snapshot,
+    c.output_rate_snapshot,
+    c.cached_rate_snapshot,
+    c.rate_unit,
     c.provider_request_id,
     c.error,
     c.evidence,
@@ -66,7 +75,8 @@ SELECT
 FROM model_calls c
 JOIN agent_runs r ON r.id = c.run_id
 JOIN tasks t ON t.id = r.task_id
-WHERE r.task_id = $1 AND t.user_id = $2
+JOIN conversations c2 ON c2.id = t.conversation_id
+WHERE r.task_id = $1 AND c2.user_id = $2
 ORDER BY c.created_at, c.id;
 
 -- Q5 单轮费用汇总：已知小计、未知调用数、总 token
@@ -80,25 +90,28 @@ SELECT
     COALESCE(SUM(c.input_tokens), 0) AS input_tokens,
     COALESCE(SUM(c.output_tokens), 0) AS output_tokens
 FROM tasks t
+JOIN conversations c2 ON c2.id = t.conversation_id
 JOIN agent_runs r ON r.task_id = t.id
 LEFT JOIN model_calls c ON c.run_id = r.id
-WHERE t.id = $1 AND t.user_id = $2
+WHERE t.id = $1 AND c2.user_id = $2
 GROUP BY t.id;
 
 -- Q6 发送前互斥检查：同对话是否有活跃轮次或在途调用
 -- $1 = conversation_id, $2 = user_id
 SELECT
     EXISTS (
-        SELECT 1 FROM tasks
-        WHERE conversation_id = $1 AND user_id = $2
-          AND status IN ('pending', 'running')
+        SELECT 1 FROM tasks t
+        JOIN conversations c2 ON c2.id = t.conversation_id
+        WHERE t.conversation_id = $1 AND c2.user_id = $2
+          AND t.status IN ('pending', 'running')
     ) AS has_active_task,
     EXISTS (
         SELECT 1
         FROM model_calls c
         JOIN agent_runs r ON r.id = c.run_id
         JOIN tasks t ON t.id = r.task_id
-        WHERE t.conversation_id = $1 AND t.user_id = $2
+        JOIN conversations c2 ON c2.id = t.conversation_id
+        WHERE t.conversation_id = $1 AND c2.user_id = $2
           AND c.status = 'in_flight'
     ) AS has_in_flight_call;
 
@@ -113,9 +126,10 @@ SELECT
      AND (g.expires_at IS NULL OR g.expires_at > now())) AS active
 FROM task_tool_grants g
 JOIN tasks t ON t.id = g.task_id
-WHERE g.task_id = $1 AND g.tool = $2 AND t.user_id = $3;
+JOIN conversations c2 ON c2.id = t.conversation_id
+WHERE g.task_id = $1 AND g.tool = $2 AND c2.user_id = $3;
 
--- Q8 管理员待核实队列：含补录所需的原价格版本费率
+-- Q8 管理员待核实队列：含补录所需的本次调用费率快照
 -- 无 user_id 过滤，仅供 administrator 使用
 SELECT
     c.id AS call_id,
@@ -126,15 +140,16 @@ SELECT
     t.id AS task_id,
     t.title,
     u.username,
-    p.currency,
-    p.input_rate,
-    p.output_rate,
-    p.cached_rate
+    c.currency,
+    c.input_rate_snapshot,
+    c.output_rate_snapshot,
+    c.cached_rate_snapshot,
+    c.rate_unit
 FROM model_calls c
 JOIN agent_runs r ON r.id = c.run_id
 JOIN tasks t ON t.id = r.task_id
-JOIN users u ON u.id = t.user_id
-JOIN model_prices p ON p.id = t.price_id
+JOIN conversations c2 ON c2.id = t.conversation_id
+JOIN users u ON u.id = c2.user_id
 WHERE c.status = 'usage_unknown'
 ORDER BY c.created_at;
 
@@ -163,12 +178,13 @@ SELECT
     COALESCE(SUM(c.cost), 0) AS total_cost,
     COUNT(*) FILTER (WHERE c.cost IS NULL) AS unknown_calls
 FROM tasks t
+JOIN conversations c2 ON c2.id = t.conversation_id
 JOIN agent_runs r ON r.task_id = t.id
 JOIN model_calls c ON c.run_id = r.id
-JOIN model_prices p ON p.id = t.price_id
+JOIN model_prices p ON p.id = c.price_id
 JOIN models m ON m.id = p.model_id
-WHERE t.user_id = $1
-GROUP BY m.display_name, m.name, p.currency
+WHERE c2.user_id = $1
+GROUP BY m.display_name, m.name, c.currency
 ORDER BY total_cost DESC;
 
 -- Q11 对话内资料目录：模型可见的附件清单，跨轮次但同对话
@@ -181,7 +197,8 @@ SELECT
     t.created_at AS uploaded_at
 FROM materials m
 JOIN tasks t ON t.id = m.task_id
-WHERE t.conversation_id = $1 AND t.user_id = $2
+JOIN conversations c2 ON c2.id = t.conversation_id
+WHERE t.conversation_id = $1 AND c2.user_id = $2
 ORDER BY t.created_at, m.created_at;
 
 -- Q12 工具调用审计：区分成功、拒绝、失败
@@ -198,5 +215,6 @@ SELECT
 FROM tool_calls tc
 JOIN agent_runs r ON r.id = tc.run_id
 JOIN tasks t ON t.id = r.task_id
-WHERE t.id = $1 AND t.user_id = $2
+JOIN conversations c2 ON c2.id = t.conversation_id
+WHERE t.id = $1 AND c2.user_id = $2
 ORDER BY tc.created_at, tc.id;
